@@ -1,0 +1,23 @@
+{
+  "name": "nexxus-linux",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "description": "NeXXUs Linux node beta — X25519 4DH mesh",
+  "bin": {
+    "nexxus": "./nexxus.mjs"
+  },
+  "scripts": {
+    "start": "node nexxus.mjs start",
+    "test": "node test-crypto.mjs && node test-pair.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@scure/bip39": "^2.4.0"
+  }
+}

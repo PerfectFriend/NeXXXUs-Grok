@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/page"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#09090B"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:letterSpacing="0.08"
+            android:text="NEXXUS"
+            android:textColor="#F4F4F2"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/fp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="готовим ключ"
+            android:textColor="#8C8C86"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:id="@+id/seedCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Ключ BIP39 — запишите один раз"
+                android:textColor="#C4B08A"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/words"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#F4F4F2"
+                android:textSize="15sp" />
+
+            <Button
+                android:id="@+id/seedOk"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/btn_primary"
+                android:text="Фраза записана"
+                android:textAllCaps="false"
+                android:textColor="#09090B" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="ВАШ КОНТАКТ"
+                android:textColor="#8C8C86"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/contact"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#8C8C86"
+                android:textIsSelectable="true"
+                android:textSize="12sp"
+                android:typeface="monospace" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/host"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/field_bg"
+                    android:hint="IP в сети"
+                    android:inputType="text"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="12dp"
+                    android:textColor="#F4F4F2"
+                    android:textColorHint="#6B6B66" />
+
+                <EditText
+                    android:id="@+id/port"
+                    android:layout_width="88dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="8dp"
+                    android:background="@drawable/field_bg"
+                    android:inputType="number"
+                    android:paddingStart="12dp"
+                    android:text="4377"
+                    android:textColor="#F4F4F2" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/listen"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_primary"
+                android:text="Слушать сеть"
+                android:textAllCaps="false"
+                android:textColor="#09090B" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/copy"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:text="Копировать"
+                    android:textAllCaps="false"
+                    android:textColor="#F4F4F2" />
+
+                <Button
+                    android:id="@+id/reveal"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_ghost"
+                    android:text="Фраза"
+                    android:textAllCaps="false"
+                    android:textColor="#F4F4F2" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#8C8C86"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="ДОБАВИТЬ КОНТАКТ"
+                android:textColor="#8C8C86"
+                android:textSize="11sp" />
+
+            <EditText
+                android:id="@+id/uri"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/field_bg"
+                android:hint="nexxus:1:nxx1…@хост:порт"
+                android:inputType="text"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:textColor="#F4F4F2"
+                android:textColorHint="#6B6B66" />
+
+            <Button
+                android:id="@+id/add"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_primary"
+                android:text="Связь"
+                android:textAllCaps="false"
+                android:textColor="#09090B" />
+
+            <TextView
+                android:id="@+id/addErr"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#C48983"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:id="@+id/peers"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="ЧАТ"
+                android:textColor="#8C8C86"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/chatTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Нет диалога"
+                android:textColor="#F4F4F2"
+                android:textSize="20sp" />
+
+            <TextView
+                android:id="@+id/thread"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:minHeight="120dp"
+                android:textColor="#F4F4F2"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/chatInput"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/field_bg"
+                android:hint="Сообщение"
+                android:inputType="text"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:textColor="#F4F4F2"
+                android:textColorHint="#6B6B66" />
+
+            <Button
+                android:id="@+id/send"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_primary"
+                android:text="Отправить"
+                android:textAllCaps="false"
+                android:textColor="#09090B" />
+
+            <TextView
+                android:id="@+id/chatErr"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#C48983"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_bg"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="СЕЙФ"
+                android:textColor="#8C8C86"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/pickFile"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_ghost"
+                android:text="Положить файл"
+                android:textAllCaps="false"
+                android:textColor="#F4F4F2" />
+
+            <LinearLayout
+                android:id="@+id/files"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textColor="#6B6B66"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

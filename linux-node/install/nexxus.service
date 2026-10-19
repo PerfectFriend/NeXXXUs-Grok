@@ -1,0 +1,16 @@
+[Unit]
+Description=NeXXUs Linux node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@BIN@ start --data @DATA@
+WorkingDirectory=@SHARE@
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

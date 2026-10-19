@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NeXXUs</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Syne:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #09090b;
+        --elev: #121214;
+        --subtle: #1a1a1e;
+        --fg: #f4f4f2;
+        --muted: #8c8c86;
+        --dim: #6b6b66;
+        --accent: #d6d8d2;
+        --live: #8aa38a;
+        --danger: #c48983;
+        --warn: #c4b08a;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: "IBM Plex Sans", sans-serif; }
+      body { min-height: 100dvh; background-image: linear-gradient(180deg, #0c0c0e 0%, var(--bg) 42%); }
+      h1, h2 { font-family: Syne, sans-serif; font-weight: 600; letter-spacing: -0.03em; }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+      .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .brand { display: flex; align-items: center; gap: 10px; font-family: Syne, sans-serif; font-size: 22px; font-weight: 700; }
+      .mark { width: 28px; height: 28px; }
+      .kicker { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+      .card { background: var(--elev); border-radius: 24px; padding: 16px; box-shadow: 0 0 0 1px color-mix(in oklab, var(--fg) 8%, transparent); }
+      .row { display: flex; gap: 8px; }
+      .grow { flex: 1; min-width: 0; }
+      input {
+        min-height: 44px; width: 100%; border: 0; border-radius: 10px; padding: 0 12px;
+        background: var(--subtle); color: var(--fg); box-shadow: 0 0 0 1px color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      button.primary, button.ghost, button.danger {
+        min-height: 44px; border: 0; border-radius: 10px; padding: 0 16px; font-weight: 500;
+      }
+      button.primary { background: var(--accent); color: var(--bg); }
+      button.ghost { background: var(--elev); color: var(--fg); box-shadow: 0 0 0 1px color-mix(in oklab, var(--fg) 10%, transparent); }
+      button.danger { background: transparent; color: var(--danger); }
+      .grid { display: grid; gap: 16px; margin-top: 20px; }
+      @media (min-width: 900px) { .grid { grid-template-columns: 340px minmax(0, 1fr); } }
+      .contact { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; color: var(--muted); }
+      .peer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; padding: 6px 0; border-top: 1px solid color-mix(in oklab, var(--fg) 8%, transparent); }
+      .dot { width: 8px; height: 8px; border-radius: 99px; background: var(--dim); display: inline-block; }
+      .dot.on { background: var(--live); }
+      .msg { max-width: 85%; border-radius: 16px; padding: 8px 12px; font-size: 14px; }
+      .me { margin-left: auto; background: var(--accent); color: var(--bg); border-bottom-right-radius: 4px; }
+      .them { background: var(--subtle); border-bottom-left-radius: 4px; }
+      .thread { display: flex; flex-direction: column; gap: 8px; min-height: 280px; max-height: 420px; overflow: auto; padding: 8px 0; }
+      .banner { background: color-mix(in oklab, var(--warn) 16%, var(--elev)); color: var(--fg); border-radius: 20px; padding: 16px; margin: 16px 0; }
+      .words { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+      .words span { background: var(--subtle); border-radius: 12px; padding: 8px; font-size: 13px; }
+      .muted { color: var(--muted); font-size: 13px; }
+      .file { display: flex; justify-content: space-between; gap: 8px; align-items: center; min-height: 44px; font-size: 14px; }
+      .err { color: var(--danger); font-size: 13px; min-height: 1.2em; }
+      .log { font-size: 12px; color: var(--muted); max-height: 160px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="brand">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect x="3.5" y="3.5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <rect x="18.5" y="3.5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <rect x="3.5" y="18.5" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <rect x="18.5" y="18.5" width="10" height="10" rx="2" fill="currentColor" />
+          </svg>
+          NeXXUs
+        </div>
+        <div class="muted" id="fp"></div>
+      </header>
+
+      <div id="seed" class="banner" hidden>
+        <p class="kicker">Ключ BIP39 — один раз</p>
+        <p class="muted">Запишите фразу. Она хранится только в каталоге ноды. Потеря — потеря сейфа.</p>
+        <div class="words" id="words"></div>
+        <button class="primary" id="seed-ok" type="button">Фраза записана</button>
+      </div>
+
+      <div class="grid">
+        <div>
+          <section class="card">
+            <p class="kicker">Ваш контакт</p>
+            <p class="contact" id="contact"></p>
+            <div class="row" style="margin-top:12px">
+              <button class="ghost grow" id="copy" type="button">Копировать</button>
+            </div>
+            <p class="muted" style="margin-top:12px">
+              Отдайте строку второму хосту. Один из двух должен быть доступен по адресу в контакте (LAN, VPS или проброс порта).
+            </p>
+          </section>
+          <section class="card" style="margin-top:16px">
+            <p class="kicker">Добавить контакт</p>
+            <form id="add" class="row" style="margin-top:12px">
+              <input name="uri" class="grow" placeholder="nexxus:1:nxx1…@хост:порт" autocomplete="off" />
+              <button class="primary" type="submit">Связь</button>
+            </form>
+            <p class="err" id="add-err"></p>
+            <div id="peers"></div>
+          </section>
+          <section class="card" style="margin-top:16px">
+            <p class="kicker">Сейф</p>
+            <div class="row" style="margin-top:12px">
+              <input id="file" type="file" />
+            </div>
+            <div id="files" style="margin-top:8px"></div>
+          </section>
+        </div>
+        <div>
+          <section class="card">
+            <p class="kicker">Чат</p>
+            <h2 id="chat-title" style="margin:8px 0 0;font-size:28px">Нет диалога</h2>
+            <div class="thread" id="thread"></div>
+            <form id="chat" class="row">
+              <input name="text" class="grow" placeholder="Сообщение" autocomplete="off" />
+              <button class="primary" type="submit">Отправить</button>
+            </form>
+            <p class="err" id="chat-err"></p>
+          </section>
+          <section class="card" style="margin-top:16px">
+            <p class="kicker">Журнал</p>
+            <div class="log" id="log"></div>
+          </section>
+        </div>
+      </div>
+    </div>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let state = null;
+      let active = null;
+      let hideSeed = false;
+
+      const api = (p, opt) => fetch(p, opt).then(async (r) => {
+        const t = await r.text();
+        let d; try { d = JSON.parse(t); } catch { d = t; }
+        if (!r.ok) throw new Error(d.error || t || r.status);
+        return d;
+      });
+
+      function render() {
+        if (!state) return;
+        $("fp").textContent = state.identity.fingerprint;
+        $("contact").textContent = state.identity.contact;
+        if (state.mnemonic && !hideSeed) {
+          $("seed").hidden = false;
+          $("words").innerHTML = state.mnemonic.split(" ").map((w, i) => `<span>${i + 1} ${w}</span>`).join("");
+        } else $("seed").hidden = true;
+
+        const peers = state.contacts || [];
+        if (!active && peers[0]) active = peers[0].fingerprint;
+        $("peers").innerHTML = peers.length
+          ? peers.map((p) => `
+              <button class="peer" data-fp="${p.fingerprint}" type="button" style="width:100%;background:none;border:0;color:inherit;text-align:left">
+                <span><span class="dot ${p.online ? "on" : ""}"></span> ${p.name || p.fingerprint}<br>
+                <span class="muted">${p.host}:${p.port} · ${p.online ? "в сети" : "нет канала"}</span></span>
+              </button>`).join("")
+          : `<p class="muted">Пока никого. Вставьте контакт второго хоста.</p>`;
+
+        const title = peers.find((p) => p.fingerprint === active);
+        $("chat-title").textContent = title ? (title.online ? title.name : title.name + " · офлайн") : "Нет диалога";
+        const msgs = (state.messages || []).filter((m) => m.fp === active);
+        $("thread").innerHTML = msgs.map((m) => `<div class="msg ${m.fromMe ? "me" : "them"}">${escapeHtml(m.text)}</div>`).join("");
+        $("thread").scrollTop = $("thread").scrollHeight;
+
+        $("files").innerHTML = (state.files || []).map((f) => `
+          <div class="file">
+            <span>${escapeHtml(f.name)} · ${f.chunks} × 16КБ</span>
+            <span>
+              <button class="ghost" data-dl="${f.id}" type="button">Скачать</button>
+              ${active ? `<button class="ghost" data-send="${f.id}" type="button">Ему</button>` : ""}
+            </span>
+          </div>`).join("") || `<p class="muted">Пусто. Файл режется на 16 КБ и шифруется ключом ноды.</p>`;
+
+        $("log").innerHTML = (state.log || []).map((l) => `<div>${escapeHtml(l.text)}</div>`).join("");
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[c]));
+      }
+      async function tick() {
+        state = await api("/api/state");
+        render();
+      }
+
+      $("copy").onclick = async () => {
+        await navigator.clipboard.writeText(state.identity.contact);
+        $("copy").textContent = "Скопировано";
+        setTimeout(() => ($("copy").textContent = "Копировать"), 1200);
+      };
+      $("seed-ok").onclick = () => { hideSeed = true; $("seed").hidden = true; };
+      $("add").onsubmit = async (e) => {
+        e.preventDefault();
+        $("add-err").textContent = "";
+        try {
+          const uri = new FormData(e.target).get("uri");
+          await api("/api/contacts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ uri }) });
+          e.target.reset();
+          await tick();
+        } catch (err) { $("add-err").textContent = err.message; }
+      };
+      $("peers").onclick = (e) => {
+        const b = e.target.closest("[data-fp]");
+        if (b) { active = b.dataset.fp; render(); }
+      };
+      $("chat").onsubmit = async (e) => {
+        e.preventDefault();
+        $("chat-err").textContent = "";
+        if (!active) { $("chat-err").textContent = "Сначала добавьте контакт."; return; }
+        try {
+          const text = new FormData(e.target).get("text");
+          await api("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fp: active, text }) });
+          e.target.reset();
+          await tick();
+        } catch (err) { $("chat-err").textContent = err.message; }
+      };
+      $("file").onchange = async (e) => {
+        const file = e.target.files[0];
+        e.target.value = "";
+        if (!file) return;
+        await fetch("/api/files", { method: "POST", headers: { "x-filename": encodeURIComponent(file.name) }, body: file });
+        await tick();
+      };
+      $("files").onclick = async (e) => {
+        const dl = e.target.closest("[data-dl]");
+        const send = e.target.closest("[data-send]");
+        if (dl) location.href = "/api/files/" + dl.dataset.dl;
+        if (send && active) {
+          await api("/api/files/" + send.dataset.send + "/send", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ fp: active }) });
+          await tick();
+        }
+      };
+      tick();
+      setInterval(tick, 1000);
+    </script>
+  </body>
+</html>
