@@ -52,6 +52,13 @@ export function deriveIdentity(mnemonic) {
   };
 }
 
+export function deriveDevice(seed, deviceId) {
+  const id = typeof deviceId === "string" ? hexToBytes(deviceId) : deviceId;
+  if (id.length !== 16) throw new Error("device id");
+  const edPriv = hkdf(sha256, seed, te("nexxus-device"), id, 32);
+  return { id, idHex: bytesToHex(id), edPriv, edPub: ed25519.getPublicKey(edPriv) };
+}
+
 export function generateEph() {
   const secretKey = x25519.utils.randomSecretKey();
   const publicKey = x25519.getPublicKey(secretKey);

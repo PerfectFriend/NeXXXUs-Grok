@@ -1,15 +1,15 @@
 {
   "name": "nexxus-linux",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "NeXXUs Linux node beta — X25519 4DH mesh",
+  "description": "NeXXXUs Linux node — vault map and blind replicas",
   "bin": {
     "nexxus": "./nexxus.mjs"
   },
   "scripts": {
     "start": "node nexxus.mjs start",
-    "test": "node test-crypto.mjs && node test-pair.mjs"
+    "test": "node test-crypto.mjs && node test-pair.mjs && node test-vault.mjs"
   },
   "engines": {
     "node": ">=22"

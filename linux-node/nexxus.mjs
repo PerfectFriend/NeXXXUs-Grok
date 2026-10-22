@@ -32,7 +32,7 @@ async function main() {
   void httpServer;
 
   console.log("");
-  console.log("NeXXUs  ·  Linux beta 0.1.2");
+  console.log("NeXXXUs  ·  Linux 0.2.0");
   console.log("ключ     ", node.identity.fingerprint);
   if (node.fresh && node.mnemonic) {
     console.log("");

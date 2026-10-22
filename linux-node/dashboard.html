@@ -175,12 +175,12 @@
 
         $("files").innerHTML = (state.files || []).map((f) => `
           <div class="file">
-            <span>${escapeHtml(f.name)} · ${f.chunks} × 16КБ</span>
+            <span>${escapeHtml(f.name)} · ${f.chunks} × 16 КБ · ${f.state === "placed" ? "в сети 3/3" : "у себя · сеть " + (f.copies || 0) + "/3"}</span>
             <span>
               <button class="ghost" data-dl="${f.id}" type="button">Скачать</button>
               ${active ? `<button class="ghost" data-send="${f.id}" type="button">Ему</button>` : ""}
             </span>
-          </div>`).join("") || `<p class="muted">Пусто. Файл режется на 16 КБ и шифруется ключом ноды.</p>`;
+          </div>`).join("") || `<p class="muted">Пусто. Локально файл — чанки по 16 КБ. В сеть уходит шифртекст, не сам файл.</p>`;
 
         $("log").innerHTML = (state.log || []).map((l) => `<div>${escapeHtml(l.text)}</div>`).join("");
       }

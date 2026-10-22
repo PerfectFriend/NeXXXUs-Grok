@@ -1,11 +1,12 @@
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { createMnemonic, deriveIdentity, formatContact, parseContact, isMnemonicValid } from "./identity.mjs";
+import { createMnemonic, deriveIdentity, deriveDevice, formatContact, parseContact, isMnemonicValid } from "./identity.mjs";
 import { CHUNK_BYTES, encrypt, decrypt, hashBytes, fromB64, toB64 } from "./crypto-io.mjs";
 import { createMesh } from "./mesh.mjs";
 import { ensureDir, readJson, writeJson, readFile, writeFile, writeBytes, exists, rm } from "./disk.mjs";
-import { randomBytes } from "@noble/hashes/utils.js";
+import { openVault } from "./vault.mjs";
+import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
 
 function lanIPv4() {
   const ifs = os.networkInterfaces();
@@ -73,14 +74,17 @@ export async function createNode(opts) {
   }
 
   let mnemonic;
+  let deviceId;
   let fresh = false;
   if (exists(encPath)) {
     const packed = new Uint8Array(await readFile(encPath));
     const saved = JSON.parse(new TextDecoder().decode(decrypt(machineKey, packed)));
     mnemonic = saved.mnemonic;
+    deviceId = saved.deviceId;
   } else if (exists(legacyPath)) {
     const saved = await readJson(legacyPath, null);
     mnemonic = saved?.mnemonic;
+    deviceId = saved?.deviceId;
   } else if (opts.mnemonic) {
     if (!isMnemonicValid(opts.mnemonic)) throw new Error("Фраза BIP39 невалидна.");
     mnemonic = opts.mnemonic;
@@ -90,10 +94,19 @@ export async function createNode(opts) {
     fresh = true;
   }
   if (!mnemonic) throw new Error("Нет ключа ноды.");
+  if (!deviceId) deviceId = bytesToHex(randomBytes(16));
   const identity = deriveIdentity(mnemonic);
+  identity.device = deriveDevice(identity.seed, deviceId);
   const blob = encrypt(
     machineKey,
-    new TextEncoder().encode(JSON.stringify({ mnemonic: identity.mnemonic, fingerprint: identity.fingerprint, pubHex: identity.pubHex })),
+    new TextEncoder().encode(
+      JSON.stringify({
+        mnemonic: identity.mnemonic,
+        fingerprint: identity.fingerprint,
+        pubHex: identity.pubHex,
+        deviceId,
+      }),
+    ),
   );
   await writeBytes(encPath, Buffer.from(blob), 0o600);
   if (exists(legacyPath)) await rm(legacyPath, { force: true });
@@ -113,6 +126,10 @@ export async function createNode(opts) {
   let log = await readJson(path.join(dataDir, "log.json"), []);
   const online = new Map();
   const listeners = new Set();
+  const vault = await openVault({ dataDir, identity });
+  const pendingBlobs = new Map();
+  const replicating = new Set();
+  let foreign = 0;
 
   const pushLog = (text) => {
     log = [{ id: randomUUID(), at: Date.now(), text }, ...log].slice(0, 80);
@@ -138,7 +155,8 @@ export async function createNode(opts) {
       online: online.get(c.fingerprint) === true,
     })),
     messages,
-    files: files.map(({ stored, ...rest }) => rest),
+    files: fileIndex(),
+    foreign,
     log,
     fresh,
     mnemonic: fresh ? identity.mnemonic : null,
@@ -171,6 +189,11 @@ export async function createNode(opts) {
         }
         emit();
       }
+      if (ev.kind === "peer" && ev.online) {
+        for (const file of vault.list()) {
+          if (file.copies < 3) void replicateFile(file.id);
+        }
+      }
     },
     onPacket: (fp, obj) => {
       if (obj.t === "chat") {
@@ -188,6 +211,17 @@ export async function createNode(opts) {
         pushLog(`Входящий файл ${name} (${chunks} чанков) от ${fp}`);
       } else if (obj.t === "chunk") {
         void receiveChunk(fp, obj);
+      } else if (obj.t === "blob_put") {
+        void acceptBlob(fp, obj);
+      } else if (obj.t === "blob_ack") {
+        const pending = pendingBlobs.get(obj.cid);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingBlobs.delete(obj.cid);
+          pending.resolve(true);
+        }
+      } else if (obj.t === "blob_drop") {
+        if (Array.isArray(obj.cids)) void vault.dropForeign(obj.cids.slice(0, 4096));
       } else if (obj.t === "ping") {
         try {
           mesh.send(fp, { t: "pong", ts: Date.now() });
@@ -198,6 +232,87 @@ export async function createNode(opts) {
     },
   });
 
+  function fileIndex() {
+    const modern = vault.list();
+    const ids = new Set(modern.map((file) => file.id));
+    const legacy = files
+      .filter((file) => !ids.has(file.id))
+      .map(({ stored, ...rest }) => ({ ...rest, copies: 0, state: "legacy", v: 1 }));
+    return [...modern, ...legacy];
+  }
+
+  function expectAck(cid) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingBlobs.delete(cid);
+        resolve(false);
+      }, 8000);
+      pendingBlobs.set(cid, { resolve, timer });
+    });
+  }
+
+  async function acceptBlob(fp, obj) {
+    if (typeof obj.cid !== "string" || typeof obj.data !== "string") return;
+    if (obj.data.length > 80_000) return;
+    const ct = fromB64(obj.data);
+    const ok = await vault.storeForeign(obj.cid, ct);
+    if (!ok) return;
+    foreign += 1;
+    try {
+      mesh.send(fp, { t: "blob_ack", cid: obj.cid });
+    } catch {
+      /* peer left */
+    }
+    emit();
+  }
+
+  async function replicateFile(id) {
+    if (replicating.has(id) || !vault.has(id)) return;
+    replicating.add(id);
+    try {
+      const peers = contacts.filter((c) => c.fingerprint !== identity.fingerprint && mesh.isOnline(c.fingerprint));
+      let guard = 0;
+      while (guard++ < 3) {
+        const current = vault.list().find((file) => file.id === id);
+        if (!current || current.copies >= 3) return;
+        const peer = peers.find((c) => mesh.isOnline(c.fingerprint) && !current.holders.includes(c.fingerprint));
+        if (!peer) return;
+        const slot = current.copies + 1;
+        let planned;
+        try {
+          planned = await vault.planReplica(id, slot);
+        } catch (err) {
+          pushLog(`Реплика ${id} не собрана: ${err.message}`);
+          return;
+        }
+        if (!planned) return;
+        const waits = planned.cids.map((cid) => expectAck(cid));
+        try {
+          for (let i = 0; i < planned.cids.length; i++) {
+            mesh.send(peer.fingerprint, {
+              t: "blob_put",
+              cid: planned.cids[i],
+              data: toB64(planned.bodies[i]),
+            });
+          }
+        } catch (err) {
+          pushLog(`Реплика не ушла: ${err.message}`);
+          return;
+        }
+        const acks = await Promise.all(waits);
+        if (!acks.every(Boolean)) {
+          pushLog(`Копия ${slot}/3 для ${current.name} не подтвердилась.`);
+          return;
+        }
+        await vault.pinReplica(id, planned, peer.fingerprint);
+        peers.splice(peers.indexOf(peer), 1);
+        pushLog(`${current.name}: копия ${slot}/3 на ${peer.fingerprint}`);
+        emit();
+      }
+    } finally {
+      replicating.delete(id);
+    }
+  }
   async function receiveChunk(fp, obj) {
     const meta = incomingFiles.get(obj.id);
     if (!meta) return;
@@ -225,32 +340,16 @@ export async function createNode(opts) {
 
   async function storePlainFile({ id, name, bytes, from }) {
     const fileId = String(id || randomUUID()).replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 80) || randomUUID();
-    const dir = path.join(dataDir, "vault", fileId);
-    await ensureDir(dir);
-    const hash = hashBytes(bytes);
-    const chunks = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
-    for (let i = 0; i < chunks; i++) {
-      const slice = bytes.subarray(i * CHUNK_BYTES, (i + 1) * CHUNK_BYTES);
-      const packed = encrypt(identity.vaultKey, slice);
-      await writeFile(path.join(dir, `c-${String(i).padStart(5, "0")}.bin`), packed);
-    }
-    const rec = {
-      id: fileId,
-      name: safeName(name),
-      size: bytes.length,
-      hash,
-      chunks,
-      at: Date.now(),
-      from: from ?? null,
-    };
-    files = [rec, ...files.filter((f) => f.id !== fileId)];
-    await writeJson(path.join(dataDir, "files.json"), files);
+    const rec = await vault.addFile({ id: fileId, name: safeName(name), bytes });
+    if (from) rec.from = from;
     emit();
+    void replicateFile(fileId).catch((err) => pushLog(String(err.message ?? err)));
     return rec;
   }
 
   async function loadPlainFile(id) {
-    const rec = files.find((f) => f.id === id);
+    if (vault.has(id)) return vault.readPlain(id);
+    const rec = files.find((file) => file.id === id);
     if (!rec) throw new Error("Файл не найден.");
     const dir = path.join(dataDir, "vault", id);
     const parts = [];
@@ -258,12 +357,12 @@ export async function createNode(opts) {
       const packed = new Uint8Array(await readFile(path.join(dir, `c-${String(i).padStart(5, "0")}.bin`)));
       parts.push(decrypt(identity.vaultKey, packed));
     }
-    const total = parts.reduce((n, b) => n + b.length, 0);
+    const total = parts.reduce((n, part) => n + part.length, 0);
     const out = new Uint8Array(total);
-    let o = 0;
-    for (const p of parts) {
-      out.set(p, o);
-      o += p.length;
+    let offset = 0;
+    for (const part of parts) {
+      out.set(part, offset);
+      offset += part.length;
     }
     return { rec, bytes: out };
   }
@@ -313,7 +412,17 @@ export async function createNode(opts) {
   }
 
   async function removeFile(id) {
-    files = files.filter((f) => f.id !== id);
+    if (vault.has(id)) {
+      const dropped = await vault.dropFile(id);
+      for (const replica of dropped.holders) {
+        try {
+          mesh.send(replica.holder, { t: "blob_drop", cids: replica.cids });
+        } catch {
+          /* peer offline */
+        }
+      }
+    }
+    files = files.filter((file) => file.id !== id);
     await writeJson(path.join(dataDir, "files.json"), files);
     await rm(path.join(dataDir, "vault", id), { recursive: true, force: true });
     emit();
