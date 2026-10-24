@@ -2,10 +2,10 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createMnemonic, deriveIdentity, deriveDevice, formatContact, parseContact, isMnemonicValid } from "./identity.mjs";
-import { CHUNK_BYTES, encrypt, decrypt, hashBytes, fromB64, toB64 } from "./crypto-io.mjs";
+import { CHUNK_BYTES, encrypt, decrypt, hashBytes, fromB64, toB64, hexToBytes } from "./crypto-io.mjs";
 import { createMesh } from "./mesh.mjs";
 import { ensureDir, readJson, writeJson, readFile, writeFile, writeBytes, exists, rm } from "./disk.mjs";
-import { openVault } from "./vault.mjs";
+import { openVault, mapLocator, auditProof } from "./vault.mjs";
 import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
 
 function lanIPv4() {
@@ -126,8 +126,17 @@ export async function createNode(opts) {
   let log = await readJson(path.join(dataDir, "log.json"), []);
   const online = new Map();
   const listeners = new Set();
-  const vault = await openVault({ dataDir, identity });
+  let mesh = null;
+  const vault = await openVault({
+    dataDir,
+    identity,
+    onSave() {
+      if (mesh) publishMap();
+    },
+  });
   const pendingBlobs = new Map();
+  const pendingGets = new Map();
+  const pendingAudits = new Map();
   const replicating = new Set();
   let foreign = 0;
 
@@ -164,7 +173,7 @@ export async function createNode(opts) {
 
   const incomingFiles = new Map();
 
-  const mesh = createMesh({
+  mesh = createMesh({
     identity,
     advertise: { host: advertiseHost, name },
     listenHost: opts.host,
@@ -190,6 +199,8 @@ export async function createNode(opts) {
         emit();
       }
       if (ev.kind === "peer" && ev.online) {
+        publishMap();
+        requestMap(ev.fp);
         for (const file of vault.list()) {
           if (file.copies < 3) void replicateFile(file.id);
         }
@@ -222,6 +233,38 @@ export async function createNode(opts) {
         }
       } else if (obj.t === "blob_drop") {
         if (Array.isArray(obj.cids)) void vault.dropForeign(obj.cids.slice(0, 4096));
+      } else if (obj.t === "blob_get") {
+        void serveBlob(fp, obj.cid);
+      } else if (obj.t === "blob_data") {
+        const pending = pendingGets.get(obj.cid);
+        if (pending && typeof obj.data === "string" && obj.data.length <= 80_000) {
+          clearTimeout(pending.timer);
+          pendingGets.delete(obj.cid);
+          pending.resolve(fromB64(obj.data));
+        }
+      } else if (obj.t === "blob_miss") {
+        const pending = pendingGets.get(obj.cid);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingGets.delete(obj.cid);
+          pending.resolve(null);
+        }
+      } else if (obj.t === "map_put") {
+        void acceptMap(fp, obj);
+      } else if (obj.t === "map_get") {
+        void serveMap(fp, obj.loc);
+      } else if (obj.t === "map_data") {
+        void adoptMap(obj);
+      } else if (obj.t === "audit") {
+        void answerAudit(fp, obj);
+      } else if (obj.t === "audit_ok" || obj.t === "audit_miss") {
+        const key = `${obj.cid}:${obj.challenge}`;
+        const pending = pendingAudits.get(key);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingAudits.delete(key);
+          pending.resolve(obj.t === "audit_miss" ? "miss" : obj.proof);
+        }
       } else if (obj.t === "ping") {
         try {
           mesh.send(fp, { t: "pong", ts: Date.now() });
@@ -251,6 +294,170 @@ export async function createNode(opts) {
     });
   }
 
+  function expectGet(cid) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingGets.delete(cid);
+        resolve(null);
+      }, 8000);
+      pendingGets.set(cid, { resolve, timer });
+    });
+  }
+
+  function publishMap() {
+    const loc = mapLocator(identity.vaultKey);
+    const data = toB64(vault.packed());
+    for (const peer of contacts) {
+      if (!mesh.isOnline(peer.fingerprint)) continue;
+      try {
+        mesh.send(peer.fingerprint, { t: "map_put", loc, data });
+      } catch {
+        /* offline */
+      }
+    }
+  }
+
+  function requestMap(fp) {
+    const loc = mapLocator(identity.vaultKey);
+    try {
+      mesh.send(fp, { t: "map_get", loc });
+    } catch {
+      /* offline */
+    }
+  }
+
+  async function acceptMap(fp, obj) {
+    if (!/^[a-f0-9]{64}$/.test(obj.loc) || typeof obj.data !== "string") return;
+    const body = fromB64(obj.data);
+    if (body.length < 24 || body.length > 2_000_000) return;
+    const dir = path.join(dataDir, "maps");
+    await ensureDir(dir);
+    const mark = path.join(dir, `${obj.loc}.fp`);
+    if (exists(mark)) {
+      const prev = String(await readFile(mark, "utf8")).trim();
+      if (prev && prev !== fp) return;
+    }
+    await writeBytes(path.join(dir, `${obj.loc}.bin`), Buffer.from(body), 0o600);
+    await writeFile(mark, fp, { mode: 0o600 });
+  }
+
+  async function serveMap(fp, loc) {
+    if (!/^[a-f0-9]{64}$/.test(loc)) return;
+    const dir = path.join(dataDir, "maps");
+    const mark = path.join(dir, `${loc}.fp`);
+    const bin = path.join(dir, `${loc}.bin`);
+    if (!exists(mark) || !exists(bin)) return;
+    const prev = String(await readFile(mark, "utf8")).trim();
+    if (prev !== fp) return;
+    try {
+      mesh.send(fp, { t: "map_data", loc, data: toB64(new Uint8Array(await readFile(bin))) });
+    } catch {
+      /* offline */
+    }
+  }
+
+  async function adoptMap(obj) {
+    if (obj.loc !== mapLocator(identity.vaultKey) || typeof obj.data !== "string") return;
+    const body = fromB64(obj.data);
+    if (body.length > 2_000_000) return;
+    const adopted = await vault.importPacked(body);
+    if (adopted) {
+      pushLog("Журнал подтянут с чужой ноды.");
+      emit();
+    }
+  }
+
+  async function serveBlob(fp, cid) {
+    const ct = await vault.foreignCipher(String(cid ?? ""));
+    try {
+      if (!ct) mesh.send(fp, { t: "blob_miss", cid });
+      else mesh.send(fp, { t: "blob_data", cid, data: toB64(ct) });
+    } catch {
+      /* offline */
+    }
+  }
+
+  async function answerAudit(fp, obj) {
+    if (typeof obj.cid !== "string" || typeof obj.challenge !== "string" || obj.challenge.length !== 64) return;
+    const ct = await vault.foreignCipher(obj.cid);
+    try {
+      if (!ct) {
+        mesh.send(fp, { t: "audit_miss", cid: obj.cid, challenge: obj.challenge });
+        return;
+      }
+      mesh.send(fp, {
+        t: "audit_ok",
+        cid: obj.cid,
+        challenge: obj.challenge,
+        proof: auditProof(ct, hexToBytes(obj.challenge)),
+      });
+    } catch {
+      /* offline */
+    }
+  }
+
+  async function fetchCipher(cid, replica) {
+    if (!mesh.isOnline(replica.holder) && replica.host && replica.port && replica.pubHex) {
+      try {
+        mesh.dial({
+          fingerprint: replica.holder,
+          pubHex: replica.pubHex,
+          host: replica.host,
+          port: replica.port,
+        });
+      } catch {
+        return null;
+      }
+      const start = Date.now();
+      while (!mesh.isOnline(replica.holder) && Date.now() - start < 2500) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    if (!mesh.isOnline(replica.holder)) return null;
+    const pending = expectGet(cid);
+    try {
+      mesh.send(replica.holder, { t: "blob_get", cid });
+    } catch {
+      return null;
+    }
+    return pending;
+  }
+
+  async function auditNow() {
+    for (const target of vault.auditTargets()) {
+      if (!mesh.isOnline(target.holder)) continue;
+      const challenge = bytesToHex(randomBytes(32));
+      let expected;
+      try {
+        expected = await vault.proofFor(target.id, target.slot, target.index, hexToBytes(challenge));
+      } catch (err) {
+        pushLog(`Проверка ${target.name} не посчитана: ${err.message}`);
+        continue;
+      }
+      const verdict = await new Promise((resolve) => {
+        const key = `${target.cid}:${challenge}`;
+        const timer = setTimeout(() => {
+          pendingAudits.delete(key);
+          resolve("timeout");
+        }, 4000);
+        pendingAudits.set(key, { resolve, timer });
+        try {
+          mesh.send(target.holder, { t: "audit", cid: target.cid, challenge });
+        } catch {
+          clearTimeout(timer);
+          pendingAudits.delete(key);
+          resolve("timeout");
+        }
+      });
+      const bad = verdict === "miss" || (verdict !== "timeout" && verdict !== expected);
+      if (!bad) continue;
+      await vault.unpinReplica(target.id, target.slot);
+      pushLog(`${target.name}: копия ${target.slot} снята, нода не держит чанк.`);
+      emit();
+      void replicateFile(target.id);
+    }
+  }
+
   async function acceptBlob(fp, obj) {
     if (typeof obj.cid !== "string" || typeof obj.data !== "string") return;
     if (obj.data.length > 80_000) return;
@@ -275,9 +482,17 @@ export async function createNode(opts) {
       while (guard++ < 3) {
         const current = vault.list().find((file) => file.id === id);
         if (!current || current.copies >= 3) return;
-        const peer = peers.find((c) => mesh.isOnline(c.fingerprint) && !current.holders.includes(c.fingerprint));
+        const peer = peers.find((c) => mesh.isOnline(c.fingerprint) && !(current.holders || []).includes(c.fingerprint));
         if (!peer) return;
-        const slot = current.copies + 1;
+        const taken = new Set(current.slots || []);
+        let slot = 0;
+        for (let s = 1; s <= 3; s++) {
+          if (!taken.has(s)) {
+            slot = s;
+            break;
+          }
+        }
+        if (!slot) return;
         let planned;
         try {
           planned = await vault.planReplica(id, slot);
@@ -304,7 +519,7 @@ export async function createNode(opts) {
           pushLog(`Копия ${slot}/3 для ${current.name} не подтвердилась.`);
           return;
         }
-        await vault.pinReplica(id, planned, peer.fingerprint);
+        await vault.pinReplica(id, planned, peer);
         peers.splice(peers.indexOf(peer), 1);
         pushLog(`${current.name}: копия ${slot}/3 на ${peer.fingerprint}`);
         emit();
@@ -348,7 +563,7 @@ export async function createNode(opts) {
   }
 
   async function loadPlainFile(id) {
-    if (vault.has(id)) return vault.readPlain(id);
+    if (vault.has(id)) return vault.readPlain(id, fetchCipher);
     const rec = files.find((file) => file.id === id);
     if (!rec) throw new Error("Файл не найден.");
     const dir = path.join(dataDir, "vault", id);
@@ -428,6 +643,10 @@ export async function createNode(opts) {
     emit();
   }
 
+  const auditTimer = setInterval(() => {
+    void auditNow().catch((err) => pushLog(String(err.message ?? err)));
+  }, 60_000);
+
   const reconnect = setInterval(() => {
     for (const c of contacts) {
       if (!mesh.isOnline(c.fingerprint) && c.host && c.port) {
@@ -476,8 +695,10 @@ export async function createNode(opts) {
     storePlainFile,
     loadPlainFile,
     removeFile,
+    auditNow,
     async stop() {
       clearInterval(reconnect);
+      clearInterval(auditTimer);
       await mesh.stop();
     },
   };

@@ -106,7 +106,19 @@ export function foldJournal(journal, nodeEdPub) {
       const file = files.get(op.id);
       if (!file) continue;
       file.replicas = file.replicas.filter((r) => r.slot !== op.slot);
-      file.replicas.push({ slot: op.slot, prefix: op.prefix, cids: op.cids, holder: op.holder });
+      file.replicas.push({
+        slot: op.slot,
+        prefix: op.prefix,
+        cids: op.cids,
+        holder: op.holder,
+        host: op.host ?? "",
+        port: op.port ?? 0,
+        pubHex: op.pubHex ?? "",
+      });
+    } else if (op.op === "unpin") {
+      const file = files.get(op.id);
+      if (!file) continue;
+      file.replicas = file.replicas.filter((r) => r.slot !== op.slot);
     } else if (op.op === "drop") {
       files.delete(op.id);
     }
@@ -114,11 +126,19 @@ export function foldJournal(journal, nodeEdPub) {
   return files;
 }
 
+export function mapLocator(vaultKey) {
+  return hashBytes(concatBytes(utf8ToBytes("nexxus-map-locator-v1|"), vaultKey));
+}
+
+export function auditProof(ct, challenge) {
+  return hashBytes(concatBytes(ct, challenge));
+}
+
 function blobPath(root, cid) {
   return path.join(root, cid.slice(0, 2), cid);
 }
 
-export async function openVault({ dataDir, identity }) {
+export async function openVault({ dataDir, identity, onSave }) {
   const root = path.join(dataDir, "blobs");
   const foreignRoot = path.join(dataDir, "blobs-net");
   const mapPath = path.join(dataDir, "map.bin");
@@ -147,6 +167,7 @@ export async function openVault({ dataDir, identity }) {
   async function save() {
     const packed = encrypt(identity.vaultKey, TEXT.encode(JSON.stringify(journal)));
     await writeBytes(mapPath, Buffer.from(packed), 0o600);
+    if (onSave) await onSave();
   }
 
   function view() {
@@ -193,15 +214,43 @@ export async function openVault({ dataDir, identity }) {
     });
   }
 
-  async function readPlain(id) {
+  async function readLocalCipher(cid) {
+    const file = blobPath(root, cid);
+    if (!exists(file)) return null;
+    const ct = new Uint8Array(await readFile(file));
+    if (hashBytes(ct) !== cid) throw new Error("локальный чанк подменён");
+    return ct;
+  }
+
+  async function readPlain(id, fetchCt) {
     const file = view().get(id);
     if (!file) throw new Error("Файл не найден.");
     const key = hexToBytes(file.fileKey);
     const parts = [];
     for (let i = 0; i < file.chunks.length; i++) {
-      const ct = new Uint8Array(await readFile(blobPath(root, file.chunks[i])));
-      if (hashBytes(ct) !== file.chunks[i]) throw new Error("локальный чанк подменён");
-      const padded = openChunk(key, ct, file.localPrefix, i, 0);
+      let opened = null;
+      const local = await readLocalCipher(file.chunks[i]).catch((err) => {
+        if (String(err.message).includes("подменён")) throw err;
+        return null;
+      });
+      if (local) opened = { ct: local, prefix: file.localPrefix, slot: 0 };
+      if (!opened && fetchCt) {
+        for (const replica of file.replicas) {
+          const cid = replica.cids[i];
+          const ct = await fetchCt(cid, replica);
+          if (ct && hashBytes(ct) === cid) {
+            opened = { ct, prefix: replica.prefix, slot: replica.slot };
+            break;
+          }
+        }
+      }
+      if (!opened) throw new Error("чанк не найден ни локально, ни в сети");
+      const padded = openChunk(key, opened.ct, opened.prefix, i, opened.slot);
+      if (opened.slot !== 0) {
+        const local = sealChunk(key, padded, hexToBytes(file.localPrefix), i, 0);
+        if (local.cid !== file.chunks[i]) throw new Error("локальный идентификатор не сошёлся");
+        await putBlob(root, local.cid, local.ct);
+      }
       const take = i === file.chunks.length - 1 ? file.size - i * CHUNK_BYTES : CHUNK_BYTES;
       parts.push(padded.subarray(0, take));
     }
@@ -223,6 +272,7 @@ export async function openVault({ dataDir, identity }) {
       hash: file.hash,
       chunks: file.chunks.length,
       copies: file.replicas.length,
+      slots: file.replicas.map((replica) => replica.slot),
       holders: file.replicas.map((replica) => replica.holder),
       state: file.replicas.length >= 3 ? "placed" : "local",
       at: file.at,
@@ -255,6 +305,7 @@ export async function openVault({ dataDir, identity }) {
   }
 
   async function pinReplica(id, planned, holder) {
+    const endpoint = typeof holder === "string" ? { fingerprint: holder } : holder;
     return lock(async () => {
       const op = signOp(
         {
@@ -263,7 +314,10 @@ export async function openVault({ dataDir, identity }) {
           slot: planned.slot,
           prefix: planned.prefix,
           cids: planned.cids,
-          holder,
+          holder: endpoint.fingerprint,
+          host: endpoint.host ?? "",
+          port: Number(endpoint.port) || 0,
+          pubHex: endpoint.pubHex ?? "",
           dev: bytesToHex(identity.device.edPub),
           at: Date.now(),
         },
@@ -273,6 +327,89 @@ export async function openVault({ dataDir, identity }) {
       await save();
       return publicRec(view().get(id));
     });
+  }
+
+  async function unpinReplica(id, slot) {
+    return lock(async () => {
+      const file = view().get(id);
+      if (!file || !file.replicas.some((replica) => replica.slot === slot)) return false;
+      journal.ops.push(
+        signOp(
+          { op: "unpin", id, slot, dev: bytesToHex(identity.device.edPub), at: Date.now() },
+          identity.device.edPriv,
+        ),
+      );
+      await save();
+      return true;
+    });
+  }
+
+  async function proofFor(id, slot, index, challenge) {
+    const file = view().get(id);
+    if (!file) throw new Error("Файл не найден.");
+    const replica = file.replicas.find((item) => item.slot === slot);
+    if (!replica) throw new Error("копия уже снята");
+    const { bytes } = await readPlain(id);
+    const slice = bytes.subarray(index * CHUNK_BYTES, Math.min(bytes.length, (index + 1) * CHUNK_BYTES));
+    const sealed = sealChunk(hexToBytes(file.fileKey), padChunk(slice), hexToBytes(replica.prefix), index, slot);
+    if (sealed.cid !== replica.cids[index]) throw new Error("идентификатор копии разъехался");
+    return auditProof(sealed.ct, challenge);
+  }
+
+  function auditTargets() {
+    const targets = [];
+    for (const file of view().values()) {
+      for (const replica of file.replicas) {
+        const index = replica.cids.length === 1 ? 0 : Math.floor(Math.random() * replica.cids.length);
+        targets.push({
+          id: file.id,
+          name: file.name,
+          slot: replica.slot,
+          index,
+          cid: replica.cids[index],
+          holder: replica.holder,
+          host: replica.host,
+          port: replica.port,
+          pubHex: replica.pubHex,
+        });
+      }
+    }
+    return targets;
+  }
+
+  function packed() {
+    return encrypt(identity.vaultKey, TEXT.encode(JSON.stringify(journal)));
+  }
+
+  async function importPacked(packedBytes) {
+    return lock(async () => {
+      let remote;
+      try {
+        remote = JSON.parse(new TextDecoder().decode(decrypt(identity.vaultKey, packedBytes)));
+      } catch {
+        return false;
+      }
+      if (!remote || remote.v !== 1 || !Array.isArray(remote.ops) || !Array.isArray(remote.devices)) return false;
+      try {
+        foldJournal(remote, identity.edPub);
+      } catch {
+        return false;
+      }
+      if (remote.ops.length <= journal.ops.length) return false;
+      journal = remote;
+      enroll(journal, identity);
+      await save();
+      return true;
+    });
+  }
+
+  async function foreignCipher(cid) {
+    if (!/^[a-f0-9]{64}$/.test(cid)) return null;
+    const file = blobPath(foreignRoot, cid);
+    if (!exists(file)) return null;
+    const ct = new Uint8Array(await readFile(file));
+    if (hashBytes(ct) !== cid) return null;
+    return ct;
   }
 
   async function dropFile(id) {
@@ -336,6 +473,12 @@ export async function openVault({ dataDir, identity }) {
     list,
     planReplica,
     pinReplica,
+    unpinReplica,
+    proofFor,
+    auditTargets,
+    packed,
+    importPacked,
+    foreignCipher,
     dropFile,
     storeForeign,
     dropForeign,
