@@ -114,7 +114,12 @@ export function foldJournal(journal, nodeEdPub) {
         host: op.host ?? "",
         port: op.port ?? 0,
         pubHex: op.pubHex ?? "",
+        seen: op.at,
       });
+    } else if (op.op === "seen") {
+      const file = files.get(op.id);
+      const replica = file?.replicas.find((item) => item.slot === op.slot);
+      if (replica) replica.seen = op.at;
     } else if (op.op === "unpin") {
       const file = files.get(op.id);
       if (!file) continue;
@@ -333,6 +338,7 @@ export async function openVault({ dataDir, identity, onSave }) {
     return lock(async () => {
       const file = view().get(id);
       if (!file || !file.replicas.some((replica) => replica.slot === slot)) return false;
+      journal.ops = journal.ops.filter((op) => !(op.op === "seen" && op.id === id && op.slot === slot));
       journal.ops.push(
         signOp(
           { op: "unpin", id, slot, dev: bytesToHex(identity.device.edPub), at: Date.now() },
@@ -342,6 +348,39 @@ export async function openVault({ dataDir, identity, onSave }) {
       await save();
       return true;
     });
+  }
+
+  async function noteSeen(id, slot) {
+    return lock(async () => {
+      const file = view().get(id);
+      if (!file?.replicas.some((replica) => replica.slot === slot)) return false;
+      journal.ops = journal.ops.filter((op) => !(op.op === "seen" && op.id === id && op.slot === slot));
+      journal.ops.push(
+        signOp(
+          { op: "seen", id, slot, dev: bytesToHex(identity.device.edPub), at: Date.now() },
+          identity.device.edPriv,
+        ),
+      );
+      await save();
+      return true;
+    });
+  }
+
+  function staleReplicas(graceMs, now = Date.now()) {
+    const stale = [];
+    for (const file of view().values()) {
+      for (const replica of file.replicas) {
+        if (now - replica.seen <= graceMs) continue;
+        stale.push({
+          id: file.id,
+          name: file.name,
+          slot: replica.slot,
+          holder: replica.holder,
+          seen: replica.seen,
+        });
+      }
+    }
+    return stale;
   }
 
   async function proofFor(id, slot, index, challenge) {
@@ -474,6 +513,8 @@ export async function openVault({ dataDir, identity, onSave }) {
     planReplica,
     pinReplica,
     unpinReplica,
+    noteSeen,
+    staleReplicas,
     proofFor,
     auditTargets,
     packed,

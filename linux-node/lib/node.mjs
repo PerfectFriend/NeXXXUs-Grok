@@ -38,6 +38,7 @@ export function parseArgs(argv) {
     advertise: "",
     name: "",
     mnemonic: "",
+    graceMs: 24 * 60 * 60 * 1000,
   };
   const rest = argv.slice(2);
   if (rest[0] && !rest[0].startsWith("-")) args.cmd = rest.shift();
@@ -52,6 +53,7 @@ export function parseArgs(argv) {
     else if (a === "--advertise") args.advertise = next, i++;
     else if (a === "--name") args.name = next, i++;
     else if (a === "--mnemonic") args.mnemonic = next, i++;
+    else if (a === "--grace-ms") args.graceMs = Number(next), i++;
   }
   return args;
 }
@@ -450,11 +452,21 @@ export async function createNode(opts) {
         }
       });
       const bad = verdict === "miss" || (verdict !== "timeout" && verdict !== expected);
-      if (!bad) continue;
+      if (!bad) {
+        await vault.noteSeen(target.id, target.slot);
+        continue;
+      }
       await vault.unpinReplica(target.id, target.slot);
       pushLog(`${target.name}: копия ${target.slot} снята, нода не держит чанк.`);
       emit();
       void replicateFile(target.id);
+    }
+    const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 24 * 60 * 60 * 1000;
+    for (const stale of vault.staleReplicas(graceMs)) {
+      await vault.unpinReplica(stale.id, stale.slot);
+      pushLog(`${stale.name}: копия ${stale.slot} снята, нет ответа дольше льготного срока.`);
+      emit();
+      void replicateFile(stale.id);
     }
   }
 

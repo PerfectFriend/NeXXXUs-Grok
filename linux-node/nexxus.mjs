@@ -20,6 +20,7 @@ async function main() {
     --advertise HOST   адрес в контакте (иначе LAN IP)
     --name NAME        имя ноды
     --mnemonic "…"     восстановить ключ BIP39
+    --grace-ms N       снимать молчащую копию через N мс (по умолчанию 24 часа)
 
 Два хоста: поднимите ноду, обменяйтесь строкой контакта, вставьте её в панель.
 Один из хостов должен быть доступен по адресу из контакта (одна сеть, VPS или проброс порта).
@@ -32,7 +33,7 @@ async function main() {
   void httpServer;
 
   console.log("");
-  console.log("NeXXXUs  ·  Linux 0.3.0");
+  console.log("NeXXXUs  ·  Linux 0.4.0");
   console.log("ключ     ", node.identity.fingerprint);
   if (node.fresh && node.mnemonic) {
     console.log("");
