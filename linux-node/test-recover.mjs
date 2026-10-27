@@ -59,46 +59,70 @@ try {
     throw new Error("проверка сняла живую копию");
   }
 
-  await rm(path.join(holderDir, "blobs-net"), { recursive: true, force: true });
-  await owner.auditNow();
-  if (!owner.snapshot().log.some((line) => line.text.includes("снята"))) {
-    throw new Error("пропавший чанк не снят");
-  }
-  await until(
-    () => owner.snapshot().files.find((file) => file.id === sent.id && file.copies >= 1),
-    "replaced",
-  );
-  await until(async () => {
-    const names = await readdir(path.join(holderDir, "maps")).catch(() => []);
-    return names.some((name) => name.endsWith(".bin"));
-  }, "map stored");
-
-  const phrase = owner.mnemonic;
-  if (!phrase) throw new Error("фраза владельца не сохранилась для второго устройства");
-  await owner.stop();
-
-  const restoredDir = await mkdtemp(path.join(os.tmpdir(), "nxx-rest-"));
-  const restored = await createNode({
-    data: restoredDir,
-    port: 18331,
-    http: 18332,
+  const spareDir = await mkdtemp(path.join(os.tmpdir(), "nxx-spare-"));
+  const spare = await createNode({
+    data: spareDir,
+    port: 18341,
+    http: 18342,
     host: "127.0.0.1",
     advertise: "127.0.0.1",
-    name: "restored",
-    mnemonic: phrase,
+    name: "spare",
   });
   try {
-    await restored.addContact(holder.contact);
-    await until(
-      () => restored.snapshot().files.some((file) => file.name === "keep.bin"),
-      "map fetched",
-    );
-    const loaded = await restored.loadPlainFile(sent.id);
-    if (Buffer.compare(loaded.bytes, body) !== 0) throw new Error("файл из сети не сошёлся");
-    console.log("RECOVER OK");
+    await owner.addContact(spare.contact);
+    await until(() => owner.snapshot().contacts.some((c) => c.fingerprint === spare.identity.fingerprint && c.online), "spare online");
+
+    await rm(path.join(holderDir, "blobs-net"), { recursive: true, force: true });
+    await owner.auditNow();
+    if (!owner.snapshot().log.some((line) => line.text.includes("снята"))) {
+      throw new Error("пропавший чанк не снят");
+    }
+    await until(() => {
+      const file = owner.snapshot().files.find((item) => item.id === sent.id);
+      const ban = owner.snapshot().contacts.find((c) => c.fingerprint === holder.identity.fingerprint);
+      return (
+        file &&
+        file.copies >= 1 &&
+        file.holders.includes(spare.identity.fingerprint) &&
+        !file.holders.includes(holder.identity.fingerprint) &&
+        ban?.blockedUntil > Date.now()
+      );
+    }, "moved to spare");
+    await until(async () => {
+      const names = await readdir(path.join(spareDir, "maps")).catch(() => []);
+      return names.some((name) => name.endsWith(".bin"));
+    }, "map stored");
+
+    const phrase = owner.mnemonic;
+    if (!phrase) throw new Error("фраза владельца не сохранилась для второго устройства");
+    await owner.stop();
+
+    const restoredDir = await mkdtemp(path.join(os.tmpdir(), "nxx-rest-"));
+    const restored = await createNode({
+      data: restoredDir,
+      port: 18331,
+      http: 18332,
+      host: "127.0.0.1",
+      advertise: "127.0.0.1",
+      name: "restored",
+      mnemonic: phrase,
+    });
+    try {
+      await restored.addContact(spare.contact);
+      await until(
+        () => restored.snapshot().files.some((file) => file.name === "keep.bin"),
+        "map fetched",
+      );
+      const loaded = await restored.loadPlainFile(sent.id);
+      if (Buffer.compare(loaded.bytes, body) !== 0) throw new Error("файл из сети не сошёлся");
+      console.log("RECOVER OK");
+    } finally {
+      await restored.stop();
+      await rm(restoredDir, { recursive: true, force: true });
+    }
   } finally {
-    await restored.stop();
-    await rm(restoredDir, { recursive: true, force: true });
+    await spare.stop();
+    await rm(spareDir, { recursive: true, force: true });
   }
 } finally {
   await holder.stop();

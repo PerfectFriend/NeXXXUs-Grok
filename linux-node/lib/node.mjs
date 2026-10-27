@@ -39,6 +39,7 @@ export function parseArgs(argv) {
     name: "",
     mnemonic: "",
     graceMs: 24 * 60 * 60 * 1000,
+    penaltyMs: 30 * 24 * 60 * 60 * 1000,
   };
   const rest = argv.slice(2);
   if (rest[0] && !rest[0].startsWith("-")) args.cmd = rest.shift();
@@ -54,6 +55,7 @@ export function parseArgs(argv) {
     else if (a === "--name") args.name = next, i++;
     else if (a === "--mnemonic") args.mnemonic = next, i++;
     else if (a === "--grace-ms") args.graceMs = Number(next), i++;
+    else if (a === "--penalty-ms") args.penaltyMs = Number(next), i++;
   }
   return args;
 }
@@ -126,6 +128,7 @@ export async function createNode(opts) {
   let messages = await readJson(path.join(dataDir, "messages.json"), []);
   let files = await readJson(path.join(dataDir, "files.json"), []);
   let log = await readJson(path.join(dataDir, "log.json"), []);
+  let reputation = await readJson(path.join(dataDir, "reputation.json"), {});
   const online = new Map();
   const listeners = new Set();
   let mesh = null;
@@ -164,6 +167,7 @@ export async function createNode(opts) {
     contacts: contacts.map((c) => ({
       ...c,
       online: online.get(c.fingerprint) === true,
+      blockedUntil: reputation[c.fingerprint]?.until > Date.now() ? reputation[c.fingerprint].until : 0,
     })),
     messages,
     files: fileIndex(),
@@ -457,6 +461,7 @@ export async function createNode(opts) {
         continue;
       }
       await vault.unpinReplica(target.id, target.slot);
+      await noteFail(target.holder);
       pushLog(`${target.name}: копия ${target.slot} снята, нода не держит чанк.`);
       emit();
       void replicateFile(target.id);
@@ -464,10 +469,26 @@ export async function createNode(opts) {
     const graceMs = Number.isFinite(opts.graceMs) ? opts.graceMs : 24 * 60 * 60 * 1000;
     for (const stale of vault.staleReplicas(graceMs)) {
       await vault.unpinReplica(stale.id, stale.slot);
+      await noteFail(stale.holder);
       pushLog(`${stale.name}: копия ${stale.slot} снята, нет ответа дольше льготного срока.`);
       emit();
       void replicateFile(stale.id);
     }
+  }
+
+  function penaltyMs() {
+    return Number.isFinite(opts.penaltyMs) ? opts.penaltyMs : 30 * 24 * 60 * 60 * 1000;
+  }
+
+  function blocked(fp, now = Date.now()) {
+    return (reputation[fp]?.until ?? 0) > now;
+  }
+
+  async function noteFail(fp) {
+    const now = Date.now();
+    reputation[fp] = { fails: (reputation[fp]?.fails ?? 0) + 1, until: now + penaltyMs(), at: now };
+    await writeJson(path.join(dataDir, "reputation.json"), reputation);
+    pushLog(`${fp}: новые чанки не кладём до конца штрафа.`);
   }
 
   async function acceptBlob(fp, obj) {
@@ -494,7 +515,12 @@ export async function createNode(opts) {
       while (guard++ < 3) {
         const current = vault.list().find((file) => file.id === id);
         if (!current || current.copies >= 3) return;
-        const peer = peers.find((c) => mesh.isOnline(c.fingerprint) && !(current.holders || []).includes(c.fingerprint));
+        const peer = peers.find(
+          (c) =>
+            mesh.isOnline(c.fingerprint) &&
+            !(current.holders || []).includes(c.fingerprint) &&
+            !blocked(c.fingerprint),
+        );
         if (!peer) return;
         const taken = new Set(current.slots || []);
         let slot = 0;

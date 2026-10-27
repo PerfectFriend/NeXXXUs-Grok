@@ -163,7 +163,7 @@
           ? peers.map((p) => `
               <button class="peer" data-fp="${p.fingerprint}" type="button" style="width:100%;background:none;border:0;color:inherit;text-align:left">
                 <span><span class="dot ${p.online ? "on" : ""}"></span> ${p.name || p.fingerprint}<br>
-                <span class="muted">${p.host}:${p.port} · ${p.online ? "в сети" : "нет канала"}</span></span>
+                <span class="muted">${p.host}:${p.port} · ${p.online ? "в сети" : "нет канала"}${p.blockedUntil ? " · без новых чанков" : ""}</span></span>
               </button>`).join("")
           : `<p class="muted">Пока никого. Вставьте контакт второго хоста.</p>`;
 
