@@ -1,5 +1,7 @@
 import os from "node:os";
 import path from "node:path";
+import { watch } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createMnemonic, deriveIdentity, deriveDevice, formatContact, parseContact, isMnemonicValid } from "./identity.mjs";
 import { CHUNK_BYTES, encrypt, decrypt, hashBytes, fromB64, toB64, hexToBytes } from "./crypto-io.mjs";
@@ -172,6 +174,7 @@ export async function createNode(opts) {
     messages,
     files: fileIndex(),
     foreign,
+    drive: path.join(dataDir, "drive"),
     log,
     fresh,
     mnemonic: fresh ? identity.mnemonic : null,
@@ -597,6 +600,7 @@ export async function createNode(opts) {
     if (from) rec.from = from;
     emit();
     void replicateFile(fileId).catch((err) => pushLog(String(err.message ?? err)));
+    pokeDrive();
     return rec;
   }
 
@@ -664,7 +668,7 @@ export async function createNode(opts) {
     pushLog(`${rec.name}: ${rec.chunks} чанков ушли на ${fp}`);
   }
 
-  async function removeFile(id) {
+  async function removeFile(id, opts = {}) {
     if (vault.has(id)) {
       const dropped = await vault.dropFile(id);
       for (const replica of dropped.holders) {
@@ -678,7 +682,99 @@ export async function createNode(opts) {
     files = files.filter((file) => file.id !== id);
     await writeJson(path.join(dataDir, "files.json"), files);
     await rm(path.join(dataDir, "vault", id), { recursive: true, force: true });
+    if (!opts.keepDrive) await forgetDrive(id);
     emit();
+    pokeDrive();
+  }
+
+  const driveDir = path.join(dataDir, "drive");
+  await ensureDir(driveDir);
+  let driveIndex = await readJson(path.join(dataDir, "drive-index.json"), {});
+  let driveChain = Promise.resolve();
+  let driveTimer = null;
+  let driveWatcher = null;
+
+  function pokeDrive() {
+    clearTimeout(driveTimer);
+    driveTimer = setTimeout(() => {
+      void syncDrive().catch((err) => pushLog(String(err.message ?? err)));
+    }, 200);
+  }
+
+  function syncDrive() {
+    const job = driveChain.then(syncDriveOnce);
+    driveChain = job.then(
+      () => {},
+      () => {},
+    );
+    return job;
+  }
+
+  async function forgetDrive(id) {
+    let changed = false;
+    for (const [name, meta] of Object.entries(driveIndex)) {
+      if (meta.id !== id) continue;
+      await rm(path.join(driveDir, name), { force: true });
+      delete driveIndex[name];
+      changed = true;
+    }
+    if (changed) await writeJson(path.join(dataDir, "drive-index.json"), driveIndex);
+  }
+
+  async function syncDriveOnce() {
+      const live = vault.list();
+      const liveIds = new Set(live.map((file) => file.id));
+      for (const [name, meta] of Object.entries(driveIndex)) {
+        if (!liveIds.has(meta.id)) {
+          await rm(path.join(driveDir, name), { force: true });
+          delete driveIndex[name];
+        }
+      }
+      for (const rec of live) {
+        const known = Object.entries(driveIndex).find(([, meta]) => meta.id === rec.id);
+        let name = known?.[0];
+        if (!name) {
+          name = safeName(rec.name);
+          if (driveIndex[name]) name = `${rec.id.slice(0, 8)}-${name}`;
+        }
+        const dest = path.join(driveDir, name);
+        if (driveIndex[name]?.id === rec.id && !exists(dest)) {
+          await removeFile(rec.id, { keepDrive: true });
+          delete driveIndex[name];
+          continue;
+        }
+        if (exists(dest)) {
+          const disk = hashBytes(new Uint8Array(await readFile(dest)));
+          if (disk === rec.hash) {
+            driveIndex[name] = { id: rec.id, hash: rec.hash };
+            continue;
+          }
+          if (driveIndex[name]?.id === rec.id) {
+            const edited = new Uint8Array(await readFile(dest));
+            await removeFile(rec.id, { keepDrive: true });
+            const stored = await storePlainFile({ name: rec.name, bytes: edited });
+            driveIndex[name] = { id: stored.id, hash: stored.hash };
+            continue;
+          }
+        }
+        const { bytes } = await loadPlainFile(rec.id);
+        await writeFile(dest, bytes);
+        driveIndex[name] = { id: rec.id, hash: rec.hash };
+      }
+      for (const name of await readdir(driveDir)) {
+        if (name.startsWith(".") || driveIndex[name]) continue;
+        const full = path.join(driveDir, name);
+        const info = await stat(full);
+        if (!info.isFile()) continue;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        if (!exists(full)) continue;
+        const again = await stat(full);
+        if (again.size !== info.size) continue;
+        const bytes = new Uint8Array(await readFile(full));
+        const stored = await storePlainFile({ name, bytes });
+        driveIndex[name] = { id: stored.id, hash: stored.hash };
+      }
+      await writeJson(path.join(dataDir, "drive-index.json"), driveIndex);
   }
 
   const auditTimer = setInterval(() => {
@@ -716,6 +812,8 @@ export async function createNode(opts) {
   }
   pushLog(fresh ? "Нода создана. Сохраните фразу BIP39 — она больше не показывается." : "Нода поднята.");
   pushLog(`Контакт: ${contact}`);
+  driveWatcher = watch(driveDir, { persistent: false }, () => pokeDrive());
+  await syncDrive();
 
   return {
     identity,
@@ -734,9 +832,12 @@ export async function createNode(opts) {
     loadPlainFile,
     removeFile,
     auditNow,
+    syncDrive,
     async stop() {
       clearInterval(reconnect);
       clearInterval(auditTimer);
+      clearTimeout(driveTimer);
+      driveWatcher?.close();
       await mesh.stop();
     },
   };

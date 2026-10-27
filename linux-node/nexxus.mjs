@@ -23,6 +23,9 @@ async function main() {
     --grace-ms N       снимать молчащую копию через N мс (по умолчанию 24 часа)
     --penalty-ms N     не класть новые чанки проштрафившейся ноде N мс (по умолчанию 30 суток)
 
+Каталог drive внутри --data — открытая копия сейфа. Файл, положенный туда, режется на чанки.
+Удаление из каталога удаляет файл из сейфа. Это не шифрованный архив: архив лежит в blobs/.
+
 Два хоста: поднимите ноду, обменяйтесь строкой контакта, вставьте её в панель.
 Один из хостов должен быть доступен по адресу из контакта (одна сеть, VPS или проброс порта).
 `);
@@ -34,7 +37,7 @@ async function main() {
   void httpServer;
 
   console.log("");
-  console.log("NeXXXUs  ·  Linux 0.5.0");
+  console.log("NeXXXUs  ·  Linux 0.6.0");
   console.log("ключ     ", node.identity.fingerprint);
   if (node.fresh && node.mnemonic) {
     console.log("");
@@ -44,6 +47,7 @@ async function main() {
   }
   console.log("контакт  ", node.contact);
   console.log("панель   ", `http://${args.httpHost || "127.0.0.1"}:${args.http}/`);
+  console.log("диск     ", node.snapshot().drive);
   console.log("");
   console.log("Вставьте контакт второго хоста в панель → Связь.");
   console.log("Ctrl+C — остановить.");
