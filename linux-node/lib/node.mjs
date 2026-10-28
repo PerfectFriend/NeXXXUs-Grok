@@ -9,6 +9,7 @@ import { createMesh } from "./mesh.mjs";
 import { ensureDir, readJson, writeJson, readFile, writeFile, writeBytes, exists, rm } from "./disk.mjs";
 import { openVault, mapLocator, auditProof } from "./vault.mjs";
 import { isOnion, parseSocks } from "./socks.mjs";
+import { startTor } from "./tor.mjs";
 import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
 
 function lanIPv4() {
@@ -45,6 +46,7 @@ export function parseArgs(argv) {
     penaltyMs: 30 * 24 * 60 * 60 * 1000,
     profile: "lab",
     torSocks: "",
+    torBin: "tor",
   };
   const rest = argv.slice(2);
   if (rest[0] && !rest[0].startsWith("-")) args.cmd = rest.shift();
@@ -63,6 +65,7 @@ export function parseArgs(argv) {
     else if (a === "--penalty-ms") args.penaltyMs = Number(next), i++;
     else if (a === "--profile") args.profile = next, i++;
     else if (a === "--tor-socks") args.torSocks = next, i++;
+    else if (a === "--tor-bin") args.torBin = next, i++;
   }
   return args;
 }
@@ -126,15 +129,24 @@ export async function createNode(opts) {
   if (opts.profile && opts.profile !== "lab" && opts.profile !== "onion") {
     throw new Error("Профиль только lab или onion.");
   }
-  const socks = parseSocks(opts.torSocks);
-  const advertiseHost = opts.advertise || (profile === "onion" ? "" : lanIPv4());
-  if (profile === "onion") {
-    if (!isOnion(advertiseHost)) {
-      throw new Error("Луковый профиль не публикует прямой адрес. Нужен --advertise вашего v3 .onion.");
-    }
-    if (!socks) throw new Error("Луковый профиль требует --tor-socks host:port.");
-  }
+  let socks = parseSocks(opts.torSocks);
+  let advertiseHost = opts.advertise || (profile === "onion" ? "" : lanIPv4());
+  let torProc = null;
   const listenHost = profile === "onion" ? "127.0.0.1" : opts.host;
+  if (profile === "onion" && !isOnion(advertiseHost)) {
+    if (advertiseHost) throw new Error("Луковый профиль не публикует прямой адрес. Нужен v3 .onion.");
+    torProc = await startTor({
+      bin: opts.torBin || "tor",
+      root: path.join(dataDir, "tor"),
+      listenPort: opts.port,
+    });
+    advertiseHost = torProc.onion;
+    socks = { host: "127.0.0.1", port: torProc.socksPort };
+  }
+  if (profile === "onion") {
+    if (!isOnion(advertiseHost)) throw new Error("Луковый профиль не получил v3 .onion.");
+    if (!socks) throw new Error("Луковый профиль требует --tor-socks host:port или локальный бинарник tor.");
+  }
   const name = opts.name || `linux-${os.hostname().slice(0, 18)}`;
   const contact = formatContact({
     fingerprint: identity.fingerprint,
@@ -863,6 +875,7 @@ export async function createNode(opts) {
       clearInterval(auditTimer);
       clearTimeout(driveTimer);
       driveWatcher?.close();
+      torProc?.stop();
       await mesh.stop();
     },
   };
