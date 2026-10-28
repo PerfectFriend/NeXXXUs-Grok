@@ -1,6 +1,7 @@
 import net from "node:net";
 import { parseContact, formatContact, generateEph, deriveSessionKey, hexToBytes, signHello, verifyHello } from "./identity.mjs";
 import { encodeFrame, decodeFrame } from "./crypto-io.mjs";
+import { connectViaSocks, isOnion } from "./socks.mjs";
 
 const HELLO_TIMEOUT_MS = 12_000;
 
@@ -32,7 +33,7 @@ function writeJson(socket, obj) {
   writeFrame(socket, Buffer.from(JSON.stringify(obj)));
 }
 
-export function createMesh({ identity, advertise, listenHost, listenPort, onEvent, onPacket }) {
+export function createMesh({ identity, advertise, listenHost, listenPort, onEvent, onPacket, profile = "lab", socks = null }) {
   /** @type {Map<string, any>} */
   const links = new Map();
   let server = null;
@@ -198,13 +199,26 @@ export function createMesh({ identity, advertise, listenHost, listenPort, onEven
     if (spec.fingerprint === identity.fingerprint) throw new Error("Нельзя добавить свой контакт.");
     const existing = links.get(spec.fingerprint);
     if (existing && !existing.socket.destroyed) return spec;
-    const socket = net.connect({ host: spec.host, port: spec.port });
-    socket.setKeepAlive(true, 15_000);
-    attach(socket, { expected: spec, inbound: false });
-    socket.on("error", (err) => {
-      log(`Не удалось дозвониться до ${spec.host}:${spec.port} — ${err.message}`);
-      onEvent?.({ kind: "peer", fp: spec.fingerprint, online: false, reason: err.message });
-    });
+    const onion = isOnion(spec.host);
+    if (profile === "onion" && !onion) throw new Error("В луковом профиле контакт обязан быть v3 .onion.");
+    if (profile !== "onion" && onion) throw new Error("Луковый контакт нельзя звать из лабораторного TCP. Нужен --profile onion.");
+    const arm = (live) => {
+      live.setKeepAlive(true, 15_000);
+      attach(live, { expected: spec, inbound: false });
+      live.on("error", (err) => {
+        log(`Не удалось дозвониться до ${spec.host}:${spec.port} — ${err.message}`);
+        onEvent?.({ kind: "peer", fp: spec.fingerprint, online: false, reason: err.message });
+      });
+    };
+    if (profile === "onion") {
+      if (!socks) throw new Error("Не задан Tor SOCKS.");
+      connectViaSocks({ socksHost: socks.host, socksPort: socks.port, host: spec.host, port: spec.port }).then(arm).catch((err) => {
+        log(`SOCKS ${spec.host}:${spec.port} — ${err.message}`);
+        onEvent?.({ kind: "peer", fp: spec.fingerprint, online: false, reason: err.message });
+      });
+      return spec;
+    }
+    arm(net.connect({ host: spec.host, port: spec.port }));
     return spec;
   }
 

@@ -8,6 +8,7 @@ import { CHUNK_BYTES, encrypt, decrypt, hashBytes, fromB64, toB64, hexToBytes } 
 import { createMesh } from "./mesh.mjs";
 import { ensureDir, readJson, writeJson, readFile, writeFile, writeBytes, exists, rm } from "./disk.mjs";
 import { openVault, mapLocator, auditProof } from "./vault.mjs";
+import { isOnion, parseSocks } from "./socks.mjs";
 import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
 
 function lanIPv4() {
@@ -42,6 +43,8 @@ export function parseArgs(argv) {
     mnemonic: "",
     graceMs: 24 * 60 * 60 * 1000,
     penaltyMs: 30 * 24 * 60 * 60 * 1000,
+    profile: "lab",
+    torSocks: "",
   };
   const rest = argv.slice(2);
   if (rest[0] && !rest[0].startsWith("-")) args.cmd = rest.shift();
@@ -58,6 +61,8 @@ export function parseArgs(argv) {
     else if (a === "--mnemonic") args.mnemonic = next, i++;
     else if (a === "--grace-ms") args.graceMs = Number(next), i++;
     else if (a === "--penalty-ms") args.penaltyMs = Number(next), i++;
+    else if (a === "--profile") args.profile = next, i++;
+    else if (a === "--tor-socks") args.torSocks = next, i++;
   }
   return args;
 }
@@ -117,7 +122,19 @@ export async function createNode(opts) {
   await writeBytes(encPath, Buffer.from(blob), 0o600);
   if (exists(legacyPath)) await rm(legacyPath, { force: true });
 
-  const advertiseHost = opts.advertise || lanIPv4();
+  const profile = opts.profile === "onion" ? "onion" : "lab";
+  if (opts.profile && opts.profile !== "lab" && opts.profile !== "onion") {
+    throw new Error("Профиль только lab или onion.");
+  }
+  const socks = parseSocks(opts.torSocks);
+  const advertiseHost = opts.advertise || (profile === "onion" ? "" : lanIPv4());
+  if (profile === "onion") {
+    if (!isOnion(advertiseHost)) {
+      throw new Error("Луковый профиль не публикует прямой адрес. Нужен --advertise вашего v3 .onion.");
+    }
+    if (!socks) throw new Error("Луковый профиль требует --tor-socks host:port.");
+  }
+  const listenHost = profile === "onion" ? "127.0.0.1" : opts.host;
   const name = opts.name || `linux-${os.hostname().slice(0, 18)}`;
   const contact = formatContact({
     fingerprint: identity.fingerprint,
@@ -165,7 +182,7 @@ export async function createNode(opts) {
       contact,
       name,
     },
-    listen: { host: opts.host, port: opts.port, http: opts.http, advertise: advertiseHost },
+    listen: { host: listenHost, port: opts.port, http: opts.http, advertise: advertiseHost, profile },
     contacts: contacts.map((c) => ({
       ...c,
       online: online.get(c.fingerprint) === true,
@@ -185,8 +202,10 @@ export async function createNode(opts) {
   mesh = createMesh({
     identity,
     advertise: { host: advertiseHost, name },
-    listenHost: opts.host,
+    listenHost,
     listenPort: opts.port,
+    profile,
+    socks,
     onEvent: (ev) => {
       if (ev.kind === "log") pushLog(ev.text);
       if (ev.kind === "peer") {
@@ -626,6 +645,12 @@ export async function createNode(opts) {
 
   async function addContact(uri) {
     const spec = parseContact(uri);
+    if (profile === "onion" && !isOnion(spec.host)) {
+      throw new Error("В луковом профиле принимается только контакт v3 .onion.");
+    }
+    if (profile === "lab" && isOnion(spec.host)) {
+      throw new Error("Лабораторный профиль не звонит на .onion. Запустите ноду с --profile onion.");
+    }
     if (spec.fingerprint === identity.fingerprint) throw new Error("Это ваш собственный контакт.");
     const row = { ...spec, name: spec.fingerprint, addedAt: Date.now() };
     const i = contacts.findIndex((c) => c.fingerprint === spec.fingerprint);

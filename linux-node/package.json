@@ -1,6 +1,6 @@
 {
   "name": "nexxus-linux",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "NeXXXUs Linux node — vault map and blind replicas",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node nexxus.mjs start",
-    "test": "node test-crypto.mjs && node test-pair.mjs && node test-vault.mjs && node test-recover.mjs && node test-grace.mjs && node test-rating.mjs && node test-drive.mjs"
+    "test": "node test-crypto.mjs && node test-pair.mjs && node test-vault.mjs && node test-recover.mjs && node test-grace.mjs && node test-rating.mjs && node test-drive.mjs && node test-onion.mjs"
   },
   "engines": {
     "node": ">=22"
