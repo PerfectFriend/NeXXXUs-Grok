@@ -44,7 +44,7 @@ async function main() {
   void httpServer;
 
   console.log("");
-  console.log("NeXXXUs  ·  Linux 0.8.0");
+  console.log("NeXXXUs  ·  Linux 0.9.0");
   console.log("ключ     ", node.identity.fingerprint);
   if (node.fresh && node.mnemonic) {
     console.log("");

@@ -60,6 +60,17 @@ function signOp(op, devicePriv) {
   return { ...body, sig: bytesToHex(ed25519.sign(opMessage(body), devicePriv)) };
 }
 
+function verifyRevoke(op, nodeEdPub) {
+  if (!op || op.op !== "revoke" || typeof op.sig !== "string" || !op.dev) return false;
+  const body = { ...op };
+  delete body.sig;
+  try {
+    return ed25519.verify(hexToBytes(op.sig), opMessage(body), nodeEdPub);
+  } catch {
+    return false;
+  }
+}
+
 function verifyOp(op, devices, nodeEdPub) {
   if (!op || typeof op.sig !== "string" || !op.dev) return false;
   const device = devices.find((d) => d.pub === op.dev);
@@ -88,7 +99,14 @@ function enroll(journal, identity) {
 
 export function foldJournal(journal, nodeEdPub) {
   const files = new Map();
+  const revoked = new Set();
   for (const op of journal.ops) {
+    if (op.op === "revoke") {
+      if (!verifyRevoke(op, nodeEdPub)) throw new Error("подпись отзыва не сходится");
+      revoked.add(op.dev);
+      continue;
+    }
+    if (revoked.has(op.dev)) continue;
     if (!verifyOp(op, journal.devices, nodeEdPub)) throw new Error("подпись журнала не сходится");
     if (op.op === "add") {
       files.set(op.id, {
@@ -179,6 +197,14 @@ export async function openVault({ dataDir, identity, onSave }) {
     return foldJournal(journal, identity.edPub);
   }
 
+  function deviceRevoked(pub = bytesToHex(identity.device.edPub)) {
+    return journal.ops.some((op) => op.op === "revoke" && op.dev === pub && verifyRevoke(op, identity.edPub));
+  }
+
+  function assertLive() {
+    if (deviceRevoked()) throw new Error("Это устройство отозвано и больше не пишет в журнал.");
+  }
+
   async function putBlob(dir, cid, ct) {
     if (hashBytes(ct) !== cid) throw new Error("идентификатор чанка не совпал с шифртекстом");
     await writeBytes(blobPath(dir, cid), Buffer.from(ct), 0o600);
@@ -186,6 +212,7 @@ export async function openVault({ dataDir, identity, onSave }) {
 
   async function addFile({ id, name, bytes }) {
     return lock(async () => {
+      assertLive();
       const size = bytes.length;
       const chunks = Math.max(1, Math.ceil(size / CHUNK_BYTES));
       if (chunks > 4096) throw new Error("файл больше 64 МБ");
@@ -312,6 +339,7 @@ export async function openVault({ dataDir, identity, onSave }) {
   async function pinReplica(id, planned, holder) {
     const endpoint = typeof holder === "string" ? { fingerprint: holder } : holder;
     return lock(async () => {
+      assertLive();
       const op = signOp(
         {
           op: "pin",
@@ -336,6 +364,7 @@ export async function openVault({ dataDir, identity, onSave }) {
 
   async function unpinReplica(id, slot) {
     return lock(async () => {
+      assertLive();
       const file = view().get(id);
       if (!file || !file.replicas.some((replica) => replica.slot === slot)) return false;
       journal.ops = journal.ops.filter((op) => !(op.op === "seen" && op.id === id && op.slot === slot));
@@ -352,6 +381,7 @@ export async function openVault({ dataDir, identity, onSave }) {
 
   async function noteSeen(id, slot) {
     return lock(async () => {
+      assertLive();
       const file = view().get(id);
       if (!file?.replicas.some((replica) => replica.slot === slot)) return false;
       journal.ops = journal.ops.filter((op) => !(op.op === "seen" && op.id === id && op.slot === slot));
@@ -429,13 +459,30 @@ export async function openVault({ dataDir, identity, onSave }) {
         return false;
       }
       if (!remote || remote.v !== 1 || !Array.isArray(remote.ops) || !Array.isArray(remote.devices)) return false;
+      const devices = [...journal.devices];
+      let newDevice = false;
+      for (const device of remote.devices) {
+        if (!device?.pub || devices.some((item) => item.pub === device.pub)) continue;
+        devices.push(device);
+        newDevice = true;
+      }
+      const seen = new Set(journal.ops.map((op) => op.sig));
+      const ops = [...journal.ops];
+      let added = 0;
+      for (const op of remote.ops) {
+        if (!op?.sig || seen.has(op.sig)) continue;
+        ops.push(op);
+        seen.add(op.sig);
+        added += 1;
+      }
+      if (!added && !newDevice) return false;
+      const merged = { v: 1, devices, ops };
       try {
-        foldJournal(remote, identity.edPub);
+        foldJournal(merged, identity.edPub);
       } catch {
         return false;
       }
-      if (remote.ops.length <= journal.ops.length) return false;
-      journal = remote;
+      journal = merged;
       enroll(journal, identity);
       await save();
       return true;
@@ -453,6 +500,7 @@ export async function openVault({ dataDir, identity, onSave }) {
 
   async function dropFile(id) {
     return lock(async () => {
+      assertLive();
       const file = view().get(id);
       if (!file) return { holders: [] };
       const holders = file.replicas.map((r) => ({ holder: r.holder, cids: r.cids }));
@@ -504,6 +552,31 @@ export async function openVault({ dataDir, identity, onSave }) {
     }
   }
 
+  function devices() {
+    const self = bytesToHex(identity.device.edPub);
+    return journal.devices.map((device) => ({
+      pub: device.pub,
+      self: device.pub === self,
+      revoked: deviceRevoked(device.pub),
+    }));
+  }
+
+  async function revokeDevice(pubHex) {
+    const pub = String(pubHex ?? "").toLowerCase();
+    return lock(async () => {
+      assertLive();
+      if (!/^[a-f0-9]{64}$/.test(pub)) throw new Error("Нужен публичный ключ устройства.");
+      if (pub === bytesToHex(identity.device.edPub)) throw new Error("Нельзя отозвать устройство, с которого вы это делаете.");
+      if (!journal.devices.some((device) => device.pub === pub)) throw new Error("Этого устройства нет в журнале.");
+      if (deviceRevoked(pub)) return false;
+      journal.ops.push(
+        signOp({ op: "revoke", dev: pub, at: Date.now() }, identity.edPriv),
+      );
+      await save();
+      return true;
+    });
+  }
+
   if (exists(mapPath) || journal.devices.length) await save();
 
   return {
@@ -523,6 +596,8 @@ export async function openVault({ dataDir, identity, onSave }) {
     dropFile,
     storeForeign,
     dropForeign,
+    devices,
+    revokeDevice,
     has: (id) => view().has(id),
     mapPath,
   };

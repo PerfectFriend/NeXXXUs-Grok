@@ -204,6 +204,7 @@ export async function createNode(opts) {
     files: fileIndex(),
     foreign,
     drive: path.join(dataDir, "drive"),
+    devices: vault.devices(),
     log,
     fresh,
     mnemonic: fresh ? identity.mnemonic : null,
@@ -870,6 +871,9 @@ export async function createNode(opts) {
     removeFile,
     auditNow,
     syncDrive,
+    revokeDevice(pub) {
+      return vault.revokeDevice(pub);
+    },
     async stop() {
       clearInterval(reconnect);
       clearInterval(auditTimer);
