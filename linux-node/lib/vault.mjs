@@ -40,7 +40,7 @@ export function openChunk(fileKey, ct, prefixHex, index, slot) {
   return xchacha20poly1305(fileKey, nonce).decrypt(ct);
 }
 
-function padChunk(slice) {
+export function padChunk(slice) {
   const out = new Uint8Array(CHUNK_BYTES);
   if (slice.length) out.set(slice, 0);
   return out;

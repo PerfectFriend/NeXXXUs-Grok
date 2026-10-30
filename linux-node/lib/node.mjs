@@ -10,7 +10,10 @@ import { ensureDir, readJson, writeJson, readFile, writeFile, writeBytes, exists
 import { openVault, mapLocator, auditProof } from "./vault.mjs";
 import { isOnion, parseSocks } from "./socks.mjs";
 import { startTor } from "./tor.mjs";
-import { bytesToHex, randomBytes } from "@noble/hashes/utils.js";
+import { bytesToHex, randomBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { createQueueKey, openQueue, sealQueue } from "./smp.mjs";
+import { packXftp, unpackXftp, verifyDesc } from "./xftp.mjs";
 
 function lanIPv4() {
   const ifs = os.networkInterfaces();
@@ -47,6 +50,7 @@ export function parseArgs(argv) {
     profile: "lab",
     torSocks: "",
     torBin: "tor",
+    miner: false,
   };
   const rest = argv.slice(2);
   if (rest[0] && !rest[0].startsWith("-")) args.cmd = rest.shift();
@@ -66,6 +70,7 @@ export function parseArgs(argv) {
     else if (a === "--profile") args.profile = next, i++;
     else if (a === "--tor-socks") args.torSocks = next, i++;
     else if (a === "--tor-bin") args.torBin = next, i++;
+    else if (a === "--miner") args.miner = true;
   }
   return args;
 }
@@ -139,6 +144,7 @@ export async function createNode(opts) {
       bin: opts.torBin || "tor",
       root: path.join(dataDir, "tor"),
       listenPort: opts.port,
+      timeoutMs: Number(opts.torTimeoutMs) || 90_000,
     });
     advertiseHost = torProc.onion;
     socks = { host: "127.0.0.1", port: torProc.socksPort };
@@ -173,7 +179,10 @@ export async function createNode(opts) {
   const pendingBlobs = new Map();
   const pendingGets = new Map();
   const pendingAudits = new Map();
+  const pendingQueues = new Map();
+  const pendingPulls = new Map();
   const replicating = new Set();
+  let queues = await readJson(path.join(dataDir, "smp.json"), {});
   let foreign = 0;
 
   const pushLog = (text) => {
@@ -194,11 +203,13 @@ export async function createNode(opts) {
       contact,
       name,
     },
-    listen: { host: listenHost, port: opts.port, http: opts.http, advertise: advertiseHost, profile },
+    listen: { host: listenHost, port: opts.port, http: opts.http, advertise: advertiseHost, profile, miner: opts.miner === true },
     contacts: contacts.map((c) => ({
       ...c,
       online: online.get(c.fingerprint) === true,
       blockedUntil: reputation[c.fingerprint]?.until > Date.now() ? reputation[c.fingerprint].until : 0,
+      miner: c.miner === true,
+      supply: c.supply || 0,
     })),
     messages,
     files: fileIndex(),
@@ -219,6 +230,7 @@ export async function createNode(opts) {
     listenPort: opts.port,
     profile,
     socks,
+    helloTimeout: profile === "onion" ? 60_000 : 12_000,
     onEvent: (ev) => {
       if (ev.kind === "log") pushLog(ev.text);
       if (ev.kind === "peer") {
@@ -231,6 +243,7 @@ export async function createNode(opts) {
             host: ev.remote.host,
             port: ev.remote.port,
             name: ev.remote.name,
+            ed: ev.remote.ed || "",
             addedAt: Date.now(),
           };
           if (i >= 0) contacts[i] = { ...contacts[i], ...row };
@@ -242,8 +255,9 @@ export async function createNode(opts) {
       if (ev.kind === "peer" && ev.online) {
         publishMap();
         requestMap(ev.fp);
+        if (opts.miner) setTimeout(() => sendMinerAd(ev.fp), 300);
         for (const file of vault.list()) {
-          if (file.copies < 3) void replicateFile(file.id);
+          if (!opts.miner && file.copies < 3) void replicateFile(file.id);
         }
       }
     },
@@ -312,6 +326,30 @@ export async function createNode(opts) {
         } catch {
           /* ignore */
         }
+      } else if (obj.t === "miner_ad") {
+        acceptMinerAd(fp, obj);
+      } else if (obj.t === "smp_open") {
+        void acceptQueueOpen(fp, obj);
+      } else if (obj.t === "smp_opened") {
+        const pending = pendingQueues.get(obj.pub);
+        if (pending && typeof obj.id === "string") {
+          clearTimeout(pending.timer);
+          pendingQueues.delete(obj.pub);
+          pending.resolve(obj.id);
+        }
+      } else if (obj.t === "smp_send") {
+        void acceptQueueSend(obj);
+      } else if (obj.t === "smp_pull") {
+        void acceptQueuePull(fp, obj);
+      } else if (obj.t === "smp_msgs") {
+        const pending = pendingPulls.get(obj.id);
+        if (pending && Array.isArray(obj.msgs)) {
+          clearTimeout(pending.timer);
+          pendingPulls.delete(obj.id);
+          pending.resolve(obj.msgs);
+        }
+      } else if (obj.t === "xftp_desc") {
+        void acceptXftp(fp, obj.desc);
       }
     },
   });
@@ -541,8 +579,144 @@ export async function createNode(opts) {
     emit();
   }
 
+  function sendMinerAd(fp) {
+    const supply = 64 * 1024 * 1024;
+    const body = utf8ToBytes(`nexxus-miner-v1|${identity.fingerprint}|${supply}`);
+    const sig = bytesToHex(ed25519.sign(body, identity.edPriv));
+    try {
+      mesh.send(fp, { t: "miner_ad", supply, sig });
+    } catch {
+      /* peer left */
+    }
+  }
+
+  function acceptMinerAd(fp, obj) {
+    const supply = Number(obj.supply);
+    if (!Number.isInteger(supply) || supply < 0 || typeof obj.sig !== "string") return;
+    const contact = contacts.find((item) => item.fingerprint === fp);
+    if (!contact?.ed || !/^[a-f0-9]{64}$/.test(contact.ed)) return;
+    const message = utf8ToBytes(`nexxus-miner-v1|${fp}|${supply}`);
+    let ok = false;
+    try {
+      ok = ed25519.verify(hexToBytes(obj.sig), message, hexToBytes(contact.ed));
+    } catch {
+      return;
+    }
+    if (!ok) return;
+    contact.miner = true;
+    contact.supply = supply;
+    void writeJson(path.join(dataDir, "contacts.json"), contacts);
+    pushLog(`${fp}: майнер, свободно объявлено ${supply} байт.`);
+    emit();
+  }
+
+  async function saveQueues() {
+    await writeJson(path.join(dataDir, "smp.json"), queues);
+  }
+
+  async function acceptQueueOpen(fp, obj) {
+    if (typeof obj.pub !== "string" || !/^[a-f0-9]{64}$/.test(obj.pub)) return;
+    const id = bytesToHex(randomBytes(16));
+    queues[id] = { pub: obj.pub, owner: fp, msgs: [] };
+    await saveQueues();
+    try {
+      mesh.send(fp, { t: "smp_opened", id, pub: obj.pub });
+    } catch {
+      /* peer left */
+    }
+  }
+
+  async function acceptQueueSend(obj) {
+    const queue = queues[obj.id];
+    if (!queue || queue.msgs.length >= 32) return;
+    if (typeof obj.eph !== "string" || typeof obj.nonce !== "string" || typeof obj.ct !== "string") return;
+    if (obj.ct.length > 100_000) return;
+    queue.msgs.push({ eph: obj.eph, nonce: obj.nonce, ct: obj.ct });
+    await saveQueues();
+  }
+
+  function acceptQueuePull(fp, obj) {
+    const queue = queues[obj.id];
+    if (!queue || queue.owner !== fp) return;
+    const msgs = queue.msgs.splice(0, queue.msgs.length);
+    void saveQueues();
+    try {
+      mesh.send(fp, { t: "smp_msgs", id: obj.id, msgs });
+    } catch {
+      queue.msgs.unshift(...msgs);
+    }
+  }
+
+  function openInbox(hostFp) {
+    const key = createQueueKey();
+    const idPromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingQueues.delete(key.pubHex);
+        reject(new Error("Очередь SMP не открылась."));
+      }, 4000);
+      pendingQueues.set(key.pubHex, { resolve, timer });
+    });
+    mesh.send(hostFp, { t: "smp_open", pub: key.pubHex });
+    return idPromise.then((id) => ({ id, host: hostFp, priv: key.priv, pub: key.pub }));
+  }
+
+  async function sendSealed(hostFp, queue, plain) {
+    const sealed = sealQueue(queue.pub, plain instanceof Uint8Array ? plain : utf8ToBytes(String(plain)));
+    mesh.send(hostFp, { t: "smp_send", id: queue.id, ...sealed });
+  }
+
+  function pullSealed(queue) {
+    const msgsPromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pendingPulls.delete(queue.id);
+        reject(new Error("Очередь SMP не ответила."));
+      }, 4000);
+      pendingPulls.set(queue.id, { resolve, timer });
+    });
+    mesh.send(queue.host, { t: "smp_pull", id: queue.id });
+    return msgsPromise.then((msgs) => msgs.map((message) => openQueue(queue.priv, message)));
+  }
+
+  async function xftpSend(fp, name, bytes) {
+    const packed = packXftp({ name, bytes, edPriv: identity.edPriv, edPub: identity.edPub });
+    if (packed.desc.host) throw new Error("в описании XFTP не должно быть адреса");
+    const waits = packed.desc.cids.map((cid) => expectAck(cid));
+    for (let i = 0; i < packed.desc.cids.length; i++) {
+      mesh.send(fp, { t: "blob_put", cid: packed.desc.cids[i], data: toB64(packed.bodies[i]) });
+    }
+    const acks = await Promise.all(waits);
+    if (!acks.every(Boolean)) throw new Error("чанки XFTP не подтвердились");
+    mesh.send(fp, { t: "xftp_desc", desc: packed.desc });
+    return packed.desc;
+  }
+
+  async function acceptXftp(fp, desc) {
+    if (!verifyDesc(desc)) {
+      pushLog("Описание XFTP отвергнуто.");
+      return;
+    }
+    const bodies = [];
+    for (const cid of desc.cids) {
+      let ct = await vault.foreignCipher(cid);
+      if (!ct) {
+        pushLog(`XFTP: нет чанка ${cid.slice(0, 12)}`);
+        return;
+      }
+      bodies.push(ct);
+    }
+    let plain;
+    try {
+      plain = unpackXftp(desc, bodies);
+    } catch (err) {
+      pushLog(`XFTP не собран: ${err.message}`);
+      return;
+    }
+    await storePlainFile({ name: desc.name, bytes: plain, from: fp });
+    pushLog(`XFTP ${desc.name} собран без адресов нод.`);
+  }
+
   async function replicateFile(id) {
-    if (replicating.has(id) || !vault.has(id)) return;
+    if (opts.miner || replicating.has(id) || !vault.has(id)) return;
     replicating.add(id);
     try {
       const peers = contacts.filter((c) => c.fingerprint !== identity.fingerprint && mesh.isOnline(c.fingerprint));
@@ -833,6 +1007,7 @@ export async function createNode(opts) {
       if (on) {
         try {
           mesh.send(fp, { t: "ping", ts: Date.now() });
+          if (opts.miner) sendMinerAd(fp);
         } catch {
           /* ignore */
         }
@@ -873,6 +1048,15 @@ export async function createNode(opts) {
     syncDrive,
     revokeDevice(pub) {
       return vault.revokeDevice(pub);
+    },
+    openInbox,
+    sendSealed,
+    pullSealed,
+    xftpSend,
+    queueRecord(id) {
+      const queue = queues[id];
+      if (!queue) return null;
+      return { owner: queue.owner, msgs: queue.msgs.map((message) => ({ ...message })) };
     },
     async stop() {
       clearInterval(reconnect);

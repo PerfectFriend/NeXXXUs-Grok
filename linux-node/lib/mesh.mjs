@@ -33,7 +33,7 @@ function writeJson(socket, obj) {
   writeFrame(socket, Buffer.from(JSON.stringify(obj)));
 }
 
-export function createMesh({ identity, advertise, listenHost, listenPort, onEvent, onPacket, profile = "lab", socks = null }) {
+export function createMesh({ identity, advertise, listenHost, listenPort, onEvent, onPacket, profile = "lab", socks = null, helloTimeout = HELLO_TIMEOUT_MS }) {
   /** @type {Map<string, any>} */
   const links = new Map();
   let server = null;
@@ -73,7 +73,7 @@ export function createMesh({ identity, advertise, listenHost, listenPort, onEven
 
     const timer = setTimeout(() => {
       if (!established) socket.destroy();
-    }, HELLO_TIMEOUT_MS);
+    }, helloTimeout);
 
     const finishHello = (msg) => {
       try {
@@ -100,6 +100,7 @@ export function createMesh({ identity, advertise, listenHost, listenPort, onEven
         host: msg.host || expected?.host,
         port: msg.port || expected?.port,
         name: msg.name || msg.fp,
+        ed: String(msg.ed || "").toLowerCase(),
       };
       try {
         key = deriveSessionKey({

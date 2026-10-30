@@ -25,6 +25,10 @@ async function main() {
     --profile lab|onion  lab — прямой TCP; onion — только v3 .onion через Tor SOCKS
     --tor-socks H:P    SocksPort, если Tor уже запущен. Иначе onion сам стартует бинарник tor
     --tor-bin PATH     чем запускать Tor, по умолчанию tor
+    --miner            не класть свои файлы в бесплатную сеть, объявить диск майнером
+
+Очередь SMP этого узла хранит только шифртекст. Это не двоичный протокол simplexmq.
+Описание XFTP несёт хеши чанков и подпись, без адресов нод. Оплата майнеру ещё не проверяется.
 
 Каталог drive внутри --data — открытая копия сейфа. Файл, положенный туда, режется на чанки.
 Удаление из каталога удаляет файл из сейфа. Это не шифрованный архив: архив лежит в blobs/.
@@ -44,7 +48,7 @@ async function main() {
   void httpServer;
 
   console.log("");
-  console.log("NeXXXUs  ·  Linux 0.9.0");
+  console.log("NeXXXUs  ·  Linux 0.10.0");
   console.log("ключ     ", node.identity.fingerprint);
   if (node.fresh && node.mnemonic) {
     console.log("");

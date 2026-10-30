@@ -14,6 +14,7 @@ export function renderTorrc({ dataDir, socksPort, hsDir, virtPort, targetPort })
     `SocksPort 127.0.0.1:${socksPort}`,
     `HiddenServiceDir ${quote(hsDir)}`,
     `HiddenServicePort ${virtPort} 127.0.0.1:${targetPort}`,
+    "ClientOnly 1",
     "Log notice stdout",
     "",
   ].join("\n");
@@ -38,7 +39,13 @@ export async function startTor({ bin = "tor", root, listenPort, timeoutMs = 90_0
   const socksPort = await freePort();
   const torrcPath = path.join(root, "torrc");
   await writeFile(torrcPath, renderTorrc({ dataDir, socksPort, hsDir, virtPort: listenPort, targetPort: listenPort }));
-  const child = spawn(bin, ["-f", torrcPath], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(bin, ["-f", torrcPath], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      LD_LIBRARY_PATH: [path.dirname(bin), process.env.LD_LIBRARY_PATH].filter(Boolean).join(":"),
+    },
+  });
   let log = "";
   child.stdout?.on("data", (chunk) => {
     log = (log + chunk).slice(-2000);
@@ -78,6 +85,13 @@ export async function startTor({ bin = "tor", root, listenPort, timeoutMs = 90_0
   if (!onion) {
     child.kill("SIGTERM");
     throw new Error(`Tor не записал v3-адрес в hostname. Адрес не подставляется. ${log.trim()}`);
+  }
+  const marked = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (log.includes("Bootstrapped 100%")) break;
+    if (!log.includes("Bootstrapped") && Date.now() - marked > 1500) break;
+    if (child.exitCode !== null) break;
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
   return {
     onion,
